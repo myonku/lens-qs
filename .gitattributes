@@ -1,25 +1,36 @@
-# 统一换行符为 LF（仓库内），检出时由各平台自行转换
+# 统一换行符（仓库内 LF，检出时由各平台转换）
 * text=auto eol=lf
 
-*.md   text eol=lf
-*.ts   text eol=lf
-*.tsx  text eol=lf
-*.js   text eol=lf
-*.json text eol=lf
-*.yml  text eol=lf
-*.yaml text eol=lf
-*.sh   text eol=lf
+# 源码与文档
+*.md    text eol=lf
+*.go    text eol=lf
+*.sql   text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+Dockerfile  text eol=lf
+Makefile    text eol=lf
+*.sh    text eol=lf
+*.mod   text eol=lf
+*.sum   text eol=lf
 
 # Windows 脚本保留 CRLF
-*.ps1  text eol=crlf
-*.bat  text eol=crlf
-*.cmd  text eol=crlf
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
 
 # 二进制
-*.png  binary
-*.jpg  binary
-*.jpeg binary
-*.webp binary
-*.pdf  binary
-*.xlsx binary
-*.docx binary
+*.exe   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.pdf   binary
+*.xlsx  binary
+*.docx  binary
+
+# 生成物：不参与语言统计与 diff
+docs/api/*.md linguist-documentation

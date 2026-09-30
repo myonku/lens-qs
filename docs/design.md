@@ -44,14 +44,14 @@
 
 ### 1.3 关键技术决定（摘要）
 
-> **v0.4 更新**：后端已按本节实现，代码在平级目录 `lens-qs-api/`（Go + Gin）。
+> **v0.4 更新**：后端已按本节实现，代码在 `backend/`（Go + Gin），与文档同属一个项目根。
 > 与原计划（NestJS + Prisma）的差异见 §3 与 §4.4 的说明。
 
 | 编号 | 决定 | 理由 |
 |---|---|---|
 | D-1 | 后端 **Go 1.24 + Gin**，单体模块化 | 单二进制部署、无运行时依赖；框架通用度高、便于快速审查（业务方明确倾向 gin） |
 | D-2 | 数据访问用 `database/sql` + **`sqlx`**，SQL 显式书写 | 薄封装、SQL 可读可审；两套占位符由 `Rebind` 统一 |
-| D-3 | 数据库 **SQLite（开发/单机）或 PostgreSQL（生产）**，自带 SQL 迁移执行器 | 开发期零依赖起步；生产可平滑切换。表结构见 `lens-qs-api/migrations/{sqlite,postgres}/` |
+| D-3 | 数据库 **SQLite（开发/单机）或 PostgreSQL（生产）**，自带 SQL 迁移执行器 | 开发期零依赖起步；生产可平滑切换。表结构见 `backend/migrations/{sqlite,postgres}/` |
 | D-4 | 认证用**服务端会话**：HttpOnly Cookie + Bearer Token 两种取令牌方式 | 浏览器与第三方调用方都能用；令牌只存 SHA-256 哈希，可服务端吊销 |
 | D-5 | 密码用 **Argon2id**（`golang.org/x/crypto`），PHC 格式自描述 | 与需求 U-1 一致；将来调参不影响旧密码校验 |
 | D-6 | 权限只有**两级**（普通用户 / 管理员），判定集中在 `middleware` + 可替换的判定层 | 需求 B-14；将来收紧只改一处 |
@@ -84,7 +84,7 @@
 └────────────────────────────┼─────────────────────────────────────────┘
                              │
 ┌────────────────────────────▼─────────────────────────────────────────┐
-│  API 服务（Go + Gin，单体模块化）—— 实现见 lens-qs-api/                 │
+│  API 服务（Go + Gin，单体模块化）—— 实现见 backend/                      │
 │  internal/auth        登录 / 会话 / 密码策略 / 锁定                    │
 │  internal/users       用户、启停、重置密码、管理员标记                  │
 │  internal/dictionary  字典（工序/单位/样品段/参考部件号/不良列定义）      │
@@ -119,44 +119,46 @@
 
 ## 3. 代码仓库结构
 
-**文档与代码分两个平级目录**（同一台机器 / 同一工作区下）：
+**单一仓库**：`lens-qs` 是项目根，前后端都放在里面，**根目录只保留一个 git 仓库**（前后端不各自建库，避免嵌套）。
 
 ```
-D:\Pr\
-├─ lens-qs/                  文档仓库（本文件所在）
-│  ├─ docs/requirements.md   需求文档
-│  ├─ docs/design.md         本文档
-│  ├─ README.md
-│  └─ .gitignore / .gitattributes
+lens-qs/                        ← 项目根（唯一 git 仓库）
+├─ docs/
+│  ├─ requirements.md           需求文档
+│  ├─ design.md                 本文档
+│  ├─ features.md               功能说明（简版，后续开发目标）
+│  └─ api.md                    接口文档（与前端对齐）
 │
-└─ lens-qs-api/              后端工程（Go + Gin）—— 本期交付物，独立 git 仓库
-   ├─ cmd/
-   │  ├─ api/                启动 HTTP 服务（含优雅退出）
-   │  ├─ migrate/            执行 / 查看迁移
-   │  ├─ seed/               初始化字典 + 参考部件号
-   │  └─ createuser/         创建 / 更新用户（含管理员）
-   ├─ internal/
-   │  ├─ auth/               登录、会话、改密（+ http/ 子包）
-   │  ├─ users/              用户（两级）
-   │  ├─ dictionary/         字典、单位、参考部件号（+ http/）
-   │  ├─ sample/             样品信息解析、缓存、参考匹配（+ http/）
-   │  ├─ inspection/         **核心**：表单/笔/行、合并保存、历史、校验、差异（+ http/）
-   │  ├─ stats/              汇总统计（+ http/）
-   │  ├─ middleware/         认证、管理员校验、CORS、请求 ID
-   │  ├─ server/             路由装配
-   │  ├─ store/              迁移执行器、统一时间格式、测试库
-   │  └─ pkg/                config / database / httpx / id / password
-   ├─ migrations/            sqlite/ 与 postgres/ 两套 .sql（go:embed 进二进制）
-   ├─ data/                  参考部件号清单 CSV（seed 使用）
-   ├─ scripts/               端到端验证脚本（PowerShell）
-   ├─ Dockerfile / docker-compose.yml / Makefile
-   ├─ .env.example
-   └─ README.md
+├─ backend/                     后端工程（Go + Gin）—— 本设计描述的对象
+│  ├─ cmd/
+│  │  ├─ api/                   启动 HTTP 服务（含优雅退出）
+│  │  ├─ migrate/               执行 / 查看迁移
+│  │  ├─ seed/                  初始化字典 + 参考部件号
+│  │  └─ createuser/            创建 / 更新用户（含管理员）
+│  ├─ internal/
+│  │  ├─ auth/                  登录、会话、改密（+ http/ 子包）
+│  │  ├─ users/                 用户（两级）
+│  │  ├─ dictionary/            字典、单位、参考部件号（+ http/）
+│  │  ├─ sample/                样品信息解析、缓存、参考匹配（+ http/）
+│  │  ├─ inspection/            **核心**：表单/笔/行、合并保存、历史、校验、差异（+ http/）
+│  │  ├─ stats/                 汇总统计（+ http/）
+│  │  ├─ middleware/            认证、管理员校验、CORS、请求 ID
+│  │  ├─ server/                路由装配
+│  │  ├─ store/                 迁移执行器、统一时间格式、测试库
+│  │  └─ pkg/                   config / database / httpx / id / password
+│  ├─ migrations/               sqlite/ 与 postgres/ 两套 .sql（go:embed 进二进制）
+│  ├─ data/                     参考部件号清单 CSV（seed 使用）
+│  ├─ scripts/                  端到端验证脚本（PowerShell）
+│  ├─ Dockerfile / docker-compose.yml / Makefile
+│  ├─ .env.example
+│  └─ README.md
+│
+└─ frontend/                    （将来）前端工程，与 backend/ 平级
 ```
 
-> **为什么分两个目录**：需求方要求"不要把 lens-qs 作为后端顶级目录"，且后端工程自带 git 信息需要独立（见 `lens-qs-api` 自己的 `.gitignore`）。两仓库各自独立提交，文档里以相对路径互相引用。
-> **校验规则、样品解析器、字段级合并逻辑**都在 `internal/inspection` 与 `internal/sample` 中**只实现一份**（Go 侧），接口返回的校验结果即这一份的实现结果。
-> 前端不在本期范围（需求 B-15），故没有 `apps/web`。
+> **分层理由**：前后端都要放进同一个项目根，方便统一管理文档、脚本与后续的前端工程；同时根目录只有一个 git 仓库，不在项目内嵌套第二个仓库。
+> **校验规则、样品解析器、字段级合并逻辑**都在 `backend/internal/inspection` 与 `backend/internal/sample` 中**只实现一份**（Go 侧），接口返回的校验结果即这一份的实现结果。
+> 前端不在本期范围（需求 B-15）。
 
 ---
 
@@ -193,9 +195,9 @@ dict_items（工序 / 单位 / 样品段 / 不良类别文案）
 ### 4.2 表定义
 
 > **实现说明**：以下用 Prisma 风格伪 DDL 表达**便于阅读的表结构**（字段、类型、约束、索引）。
-> 实际建表脚本是手写 SQL，位于 `lens-qs-api/migrations/{sqlite,postgres}/*.sql`（两套方言），
-> 由 `lens-qs-api/internal/store/migrate.go` 的迁移执行器按版本号顺序应用。
-> Go 结构体定义在 `lens-qs-api/internal/inspection/models.go`、`internal/users/store.go` 等文件中，`db` 标签与列名一一对应。
+> 实际建表脚本是手写 SQL，位于 `backend/migrations/{sqlite,postgres}/*.sql`（两套方言），
+> 由 `backend/internal/store/migrate.go` 的迁移执行器按版本号顺序应用。
+> Go 结构体定义在 `backend/internal/inspection/models.go`、`internal/users/store.go` 等文件中，`db` 标签与列名一一对应。
 >
 > **时间字段的存储约定**：所有时间列都用 `TEXT` 存 **UTC RFC3339**（秒精度）。这样 SQLite 与 PostgreSQL 行为一致，
 > 且可直接按字符串比较/排序。需要按时间范围过滤时用字符串区间即可（见 `inspection/list.go`、`stats/service.go`）。
@@ -570,7 +572,7 @@ model AuditLog {
   - 提供后台"待核对清单"供管理员补录字典或确认，属**可选治理动作**，不影响主流程。
 - 待核对清单查询：`needsReview = true AND state = 'ACTIVE'`。
 
-### 5.2 样品信息解析器（`lens-qs-api/internal/sample/parse.go`）
+### 5.2 样品信息解析器（`backend/internal/sample/parse.go`）
 
 **设计原则**：位置无关的 token 集合匹配；**解析是"尽力而为"的辅助能力，不是录入的前置条件**。
 
@@ -610,7 +612,7 @@ model AuditLog {
 ### 5.3 校验（单一实现，可被复用）
 
 ```ts
-// lens-qs-api/internal/inspection/validate.go   规则编号与需求文档 §4.1.3 一一对应
+// backend/internal/inspection/validate.go   规则编号与需求文档 §4.1.3 一一对应
 validateLine(line, mode): Issue[]              // V-1..V-5（行级）
 validateRecord(record, lines, mode): Issue[]   // V-4, V-6, V-10 + 汇总一致性
 validateForm(form): Issue[]                    // V-7, V-8, V-9（表单级）
@@ -738,7 +740,7 @@ saveRecord(input, actor, mode):
 
 **历史与差异**
 - 查询历史：`GET /api/records/:id/history` → 按 `saveCount` 倒序返回每一版。
-- 差异：`lens-qs-api/internal/inspection/diff.go` 提供 `DiffRecords(v1, v2)`，返回**字段级 + 明细级**变更清单（旧值/新值）。
+- 差异：`backend/internal/inspection/diff.go` 提供 `DiffRecords(v1, v2)`，返回**字段级 + 明细级**变更清单（旧值/新值）。
 - `RecordHistory` 里同时存了当时所属表单的快照，因此也能回答"这次保存是否顺手改了样品信息"。
 
 ### 5.7 操作日志与完整性
@@ -969,7 +971,7 @@ saveRecord(input, actor, mode):
 | B-12 不良重复计数 | V-2 恒为 warning；统计接口标注（§5.3） |
 | **B-13 率值行不处理** | **不建字段**（无 `manualRateNote`），不参与任何计算 |
 | **B-14 权限放开** | 删除 `Role/Permission/UserRole` 表与权限点；仅 `isAdmin` 保护用户管理；`AuthorizationService` 可替换（§5.5） |
-| **B-15 仅后端** | 代码仓库 `lens-qs-api` 只含后端；文档中的"场景"仅用于说明接口能力（§3、§5.9） |
+| **B-15 仅后端** | 仓库内 `backend/` 只含后端；文档中的"场景"仅用于说明接口能力（§3、§5.9） |
 | U-8/U-12 留痕 | `AuditLog` 拦截器 + `RecordHistory`（§5.6、§5.7） |
 | Q-1 层级检索 | 复合索引（§4.2.3、§7） |
 | Q-18 表单人与录入人区分 | `inspectedBy` vs `recordedBy`（§4.2.3） |
@@ -982,4 +984,4 @@ saveRecord(input, actor, mode):
 | v0.1 | 初始 | 依据需求文档 v0.1 编写初步设计 | — |
 | v0.2 | 第二轮确认后 | ① 删除审批状态机与 `DocReview`，改为 UPSERT 覆盖 + `DocHistory` 快照（§4.2.3、§4.3、§5.6）；② `formNo` 升为记录唯一键，新增并发乐观锁与 409 约定；③ 样品信息改为"原始输入优先"，冗余字段不校验、不作验收（§5.1、§5.2）；④ 表头删除送检人/操机员/交接员；⑤ 校验 V-2 降级为 warning、新增 V-9、明确只有 V-1/V-3/V-4/V-6/V-7 具阻断力；⑥ 权限点与 API 随之调整（删除 submit/review/revise，新增 history/diff）；⑦ 前端路由删除 `/review`，新增历史差异视图；⑧ 里程碑、测试策略、风险表更新 | — |
 | **v0.3** | 第三轮确认后 | ① **数据模型改为三层**：`Form` / `FormRecord` / `RecordLine` + `RecordHistory`（§4.1、§4.2.3）；② **保存语义改为字段级合并**，`mode: incremental \| full` 控制校验强度（§5.6）；③ **恢复表单既有栏目**并新增 `recordedBy` 区分"表单上的人"与"录入人"（§4.2.3、Q18）；④ **删除 RBAC 四张表**，改为 `User.isAdmin` + 可替换的 `AuthorizationService`（§4.2.1、§5.5）；⑤ **新增完成度** `isComplete` / `missingFields` / 未完成表单清单（§5.7、§6.4）；⑥ API 全面调整（`/forms`、`/records`、history/diff、defect-columns），删除 roles 接口；⑦ **删除前端目录与页面章节**，改为"接口使用场景"（§3、§5.9）；⑧ 校验新增 V-10、V-6 降级为 warning、按 mode 分级（§5.3）；⑨ 性能、安全、测试、里程碑、风险表全部更新 | — |
-| **v0.5** | 骨架落地后（实现回写） | ① **技术栈落定并已实现**：Go 1.24 + Gin + sqlx，SQLite / PostgreSQL 双驱动（§1.3、§2）；② 表定义改为**手写 SQL 迁移**（`lens-qs-api/migrations/{sqlite,postgres}/`），§4.2 的 Prisma 风格 DDL 仅作可读表结构说明；③ 时间列统一 **TEXT + UTC RFC3339**，双库行为一致（§4.2）；④ 校验参数由 `mode: incremental\|full` 改为 **`enforce: warn\|strict`**（与需求 v0.4 对齐），并明确 V-2/V-6/V-8/V-9/V-10 **任何模式都不阻断**；⑤ 仓库结构改为**文档仓库 `lens-qs` + 后端仓库 `lens-qs-api` 平级独立**（§3）；⑥ 权限收敛为**两级**（普通用户 / 管理员，§5.5）；⑦ **汇总统计的通用 `group_by` 已实现**（需求 §4.7 的基础能力已具备）；⑧ 测试策略按实际落地的用例清单更新 | — |
+| **v0.5** | 骨架落地后（实现回写） | ① **技术栈落定并已实现**：Go 1.24 + Gin + sqlx，SQLite / PostgreSQL 双驱动（§1.3、§2）；② 表定义改为**手写 SQL 迁移**（`backend/migrations/{sqlite,postgres}/`），§4.2 的 Prisma 风格 DDL 仅作可读表结构说明；③ 时间列统一 **TEXT + UTC RFC3339**，双库行为一致（§4.2）；④ 校验参数由 `mode: incremental\|full` 改为 **`enforce: warn\|strict`**（与需求 v0.4 对齐），并明确 V-2/V-6/V-8/V-9/V-10 **任何模式都不阻断**；⑤ 仓库结构定为**单一仓库**：`lens-qs` 为项目根，`docs/` 与 `backend/` 平级，前端将来放 `frontend/`（§3）；⑥ 权限收敛为**两级**（普通用户 / 管理员，§5.5）；⑦ **汇总统计的通用 `group_by` 已实现**（需求 §4.7 的基础能力已具备）；⑧ 测试策略按实际落地的用例清单更新 | — |

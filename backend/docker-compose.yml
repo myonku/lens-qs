@@ -1,0 +1,57 @@
+# lens-qs-api 部署编排：PostgreSQL + API
+#
+# 用法：
+#   cp .env.example .env      # 按需修改
+#   docker compose up -d --build
+#   curl http://127.0.0.1:8080/healthz
+#
+# 数据库数据持久化在命名卷 lensdata 中。
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: lens-qs-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lensqs}
+      POSTGRES_USER: ${POSTGRES_USER:-lens}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lens}
+      TZ: Asia/Shanghai
+    volumes:
+      - lensdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lens} -d ${POSTGRES_DB:-lensqs}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # 默认不对外暴露数据库端口；需要本地调试时取消注释
+    # ports:
+    #   - "5432:5432"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lens-qs-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: prod
+      APP_ADDR: ":8080"
+      DB_DRIVER: postgres
+      DB_DSN: "postgres://${POSTGRES_USER:-lens}:${POSTGRES_PASSWORD:-lens}@db:5432/${POSTGRES_DB:-lensqs}?sslmode=disable"
+      AUTO_MIGRATE: "true"
+      SEED_ON_START: "true"
+      SESSION_TTL: 12h
+      SESSION_IDLE_TTL: 2h
+      COOKIE_SECURE: "false"   # 前置 HTTPS 反代时改为 true
+      BOOTSTRAP_ADMIN_USER: ${BOOTSTRAP_ADMIN_USER:-admin}
+      BOOTSTRAP_ADMIN_PASS: ${BOOTSTRAP_ADMIN_PASS:-Admin@12345}
+      TZ: Asia/Shanghai
+    ports:
+      - "${API_PORT:-8080}:8080"
+
+volumes:
+  lensdata:

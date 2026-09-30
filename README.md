@@ -3,18 +3,31 @@
 将纸质《镜片表面质量检验记录表》线上化的系统 —— 定位是**"在线文档的升级版"**：把手工填表变成线上录入，不引入审批与流程管控。
 **一切以最大灵活性为先**：不强制字段、不强制顺序、不强制完整、不约束工序集合。
 
-## 仓库结构（文档与代码平级）
+## 仓库结构
+
+**单一仓库**（`lens-qs` 为整体项目根，前后端都放在里面，根目录只有一个 git 仓库）：
 
 ```
-D:\Pr\
-├─ lens-qs/          本仓库：需求与设计文档
-│  ├─ docs/requirements.md   v0.4 需求文档
-│  ├─ docs/design.md         v0.5 系统设计（含实现回写）
-│  └─ README.md
-└─ lens-qs-api/      后端工程（Go + Gin + SQLite/PostgreSQL），独立 git 仓库
+lens-qs/                    ← 项目根（唯一 git 仓库）
+├─ docs/
+│  ├─ requirements.md       需求文档（v0.4）
+│  ├─ design.md             系统设计（v0.5，含实现回写）
+│  ├─ features.md           功能说明（简版，后续开发目标清单）
+│  └─ api.md                接口文档（与前端对齐用）
+├─ backend/                 后端工程（Go 1.24 + Gin + SQLite/PostgreSQL）
+│  ├─ cmd/                  api / migrate / seed / createuser
+│  ├─ internal/             auth / users / dictionary / sample / inspection / stats / …
+│  ├─ migrations/           sqlite 与 postgres 两套 SQL
+│  ├─ data/                 参考部件号清单
+│  ├─ scripts/              端到端验证脚本
+│  └─ Dockerfile / docker-compose.yml / Makefile / .env.example
+├─ .gitignore               覆盖前后端（含 backend/bin、本地 SQLite 库等）
+├─ .gitattributes
+└─ README.md
 ```
 
-后端工程见 [`../lens-qs-api`](../lens-qs-api)（含接口清单、快速开始、测试与部署说明）。
+> 前端工程将来放在 `frontend/`（与 `backend/` 平级）。
+> `backend/` 内**没有独立的 git 仓库**，整个项目共用一个根仓库。
 
 ## 文档导航
 
@@ -22,6 +35,11 @@ D:\Pr\
 |---|---|
 | [docs/requirements.md](docs/requirements.md) | 背景与定位、**最大灵活性原则（F-1~F-8）**、业务口径（B-1~B-19）、用户体系、后端交付范围、功能需求（表头字段 / 校验 V-1~V-10 / 两种录入节奏）、样品信息双轨存储、**记录生命周期与分次录入**、**汇总统计需求（§4.7）**、权限与可见性、验收标准、**待确认问题 Q1–Q21** |
 | [docs/design.md](docs/design.md) | 技术选型（Go + Gin + sqlx）、总体架构、仓库结构、**三层数据模型（Form / FormRecord / RecordLine + RecordHistory）**、两种录入场景的数据流、样品信息解析器、**字段级合并保存**、认证与两级权限、接口清单、性能与安全、测试策略、里程碑 |
+| [docs/features.md](docs/features.md) | **功能说明（简版）**：定位与设计原则、数据模型、功能清单与实现状态（✅/⏳/❓）、校验规则、明确不做的项、非功能要求、后续开发优先级 |
+| [docs/api.md](docs/api.md) | **接口文档**：认证与错误码、逐接口的请求/响应示例、数据模型速查、汇总维度、字段中文名对照 |
+| [backend/README.md](backend/README.md) | 后端工程本身：快速开始、配置、目录结构、测试与部署 |
+
+> 后端工程见 [backend/](backend/)，接口文档见 [docs/api.md](docs/api.md)。
 
 ## 需求要点速览
 

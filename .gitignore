@@ -1,3 +1,5 @@
+# ════════════════ 通用（根目录） ════════════════
+
 # ── 依赖与构建产物 ──
 node_modules/
 dist/
@@ -18,12 +20,6 @@ pnpm-debug.log*
 tmp/
 temp/
 
-# ── 本地数据库（开发期 SQLite）──
-data/*.db
-data/*.db-journal
-data/*.sqlite
-data/*.sqlite3
-
 # ── 上传/导出产物 ──
 uploads/
 exports/
@@ -43,3 +39,23 @@ backups/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ════════════════ 后端（backend/，Go） ════════════════
+
+# 编译产物
+backend/bin/
+*.exe
+*.test
+*.out
+coverage.txt
+
+# 本地数据库（开发期 SQLite）
+data/*.db
+data/*.db-journal
+data/*.db-shm
+data/*.db-wal
+data/*.sqlite
+data/*.sqlite3
+backend/data/*.db
+backend/data/*.db-shm
+backend/data/*.db-wal

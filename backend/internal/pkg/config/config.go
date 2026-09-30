@@ -1,0 +1,128 @@
+// Package config 从环境变量读取配置（无配置文件，便于容器化部署）。
+package config
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Config 是应用的全部可配置项。
+type Config struct {
+	// App
+	Env  string // dev | prod
+	Addr string // 监听地址，如 :8080
+
+	// DB
+	DBDriver string // sqlite | postgres
+	DBDSN    string // sqlite 文件路径，或 postgres 连接串
+	DBMaxOpen int
+	DBMaxIdle int
+
+	// Auth
+	SessionTTL     time.Duration // 会话绝对有效期
+	SessionIdleTTL time.Duration // 空闲超时（超过则要求重新登录）
+	MaxLoginFail   int           // 连续失败次数
+	LockDuration   time.Duration // 达到失败上限后的锁定时长
+	CookieName     string
+	CookieSecure   bool
+	CORSOrigins    []string
+
+	// Bootstrap
+	BootstrapAdminUser string
+	BootstrapAdminPass string
+
+	// 是否自动执行数据库迁移（容器首次启动方便）
+	AutoMigrate bool
+}
+
+// Load 读取环境变量并返回配置。缺失项使用默认值。
+func Load() (*Config, error) {
+	c := &Config{
+		Env:      env("APP_ENV", "dev"),
+		Addr:     env("APP_ADDR", ":8080"),
+		DBDriver: strings.ToLower(env("DB_DRIVER", "sqlite")),
+		DBDSN:    env("DB_DSN", "./data/lens.db"),
+		DBMaxOpen: envInt("DB_MAX_OPEN", 10),
+		DBMaxIdle: envInt("DB_MAX_IDLE", 5),
+
+		SessionTTL:     envDuration("SESSION_TTL", 12*time.Hour),
+		SessionIdleTTL: envDuration("SESSION_IDLE_TTL", 2*time.Hour),
+		MaxLoginFail:   envInt("MAX_LOGIN_FAIL", 5),
+		LockDuration:   envDuration("LOCK_DURATION", 10*time.Minute),
+		CookieName:     env("COOKIE_NAME", "sid"),
+		CookieSecure:   envBool("COOKIE_SECURE", false),
+		CORSOrigins:    envList("CORS_ORIGINS", nil),
+
+		BootstrapAdminUser: env("BOOTSTRAP_ADMIN_USER", ""),
+		BootstrapAdminPass: env("BOOTSTRAP_ADMIN_PASS", ""),
+		AutoMigrate:        envBool("AUTO_MIGRATE", false),
+	}
+
+	switch c.DBDriver {
+	case "sqlite", "sqlite3":
+		c.DBDriver = "sqlite"
+	case "postgres", "postgresql", "pgx":
+		c.DBDriver = "postgres"
+	default:
+		return nil, fmt.Errorf("不支持的 DB_DRIVER: %q（可选 sqlite | postgres）", c.DBDriver)
+	}
+	return c, nil
+}
+
+// IsProd 报告当前是否为生产环境。
+func (c *Config) IsProd() bool { return c.Env == "prod" || c.Env == "production" }
+
+func env(k, def string) string {
+	if v, ok := os.LookupEnv(k); ok && strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
+	}
+	return def
+}
+
+func envInt(k string, def int) int {
+	if v, ok := os.LookupEnv(k); ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func envBool(k string, def bool) bool {
+	if v, ok := os.LookupEnv(k); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		}
+	}
+	return def
+}
+
+func envDuration(k string, def time.Duration) time.Duration {
+	if v, ok := os.LookupEnv(k); ok {
+		if d, err := time.ParseDuration(strings.TrimSpace(v)); err == nil {
+			return d
+		}
+	}
+	return def
+}
+
+func envList(k string, def []string) []string {
+	v, ok := os.LookupEnv(k)
+	if !ok || strings.TrimSpace(v) == "" {
+		return def
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
