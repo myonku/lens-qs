@@ -92,9 +92,42 @@ func (s *Service) SaveForm(ctx context.Context, actor Actor, in SaveInput) (*Sav
 }
 
 // SaveRecord 保存一笔工序记录（核心接口，字段级合并）。
+// 单笔调用：自带事务，处理完即提交。
 func (s *Service) SaveRecord(ctx context.Context, actor Actor, in SaveInput) (*SaveResult, error) {
 	if strings.TrimSpace(in.FormNo) == "" {
 		return nil, httpx.BadRequest("表单号（form_no）不能为空")
+	}
+	tx, err := s.store.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("开启事务失败: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := s.saveRecordTx(ctx, tx, actor, in)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("提交事务失败: %w", err)
+	}
+	return res, nil
+}
+
+// SaveBatch 在同一事务内依次保存同一表单下的多笔记录（次日集中录入场景）。
+//
+// 与逐笔调用 SaveRecord 的区别：**整批原子** —— 任一笔失败则整批回滚，
+// 不会留下"一半成功"的表单与笔。
+func (s *Service) SaveBatch(ctx context.Context, actor Actor, ins []SaveInput) ([]*SaveResult, error) {
+	if len(ins) == 0 {
+		return nil, httpx.BadRequest("records 不能为空")
+	}
+	for i := range ins {
+		if strings.TrimSpace(ins[i].FormNo) == "" {
+			return nil, httpx.BadRequest("表单号（form_no）不能为空")
+		}
+		// 批量语义：逐笔新建，忽略顶层传入的笔 ID 与乐观锁期望值
+		ins[i].RecordID = ""
+		ins[i].Expected = nil
 	}
 
 	tx, err := s.store.db.BeginTxx(ctx, nil)
@@ -103,6 +136,23 @@ func (s *Service) SaveRecord(ctx context.Context, actor Actor, in SaveInput) (*S
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	results := make([]*SaveResult, 0, len(ins))
+	for i := range ins {
+		res, err := s.saveRecordTx(ctx, tx, actor, ins[i])
+		if err != nil {
+			// 整批回滚：用第几笔定位问题，便于调用方排查
+			return nil, fmt.Errorf("第 %d 笔保存失败: %w", i+1, err)
+		}
+		results = append(results, res)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("提交事务失败: %w", err)
+	}
+	return results, nil
+}
+
+// saveRecordTx 是保存一笔的实际逻辑（调用方负责事务的开启与提交）。
+func (s *Service) saveRecordTx(ctx context.Context, tx *sqlx.Tx, actor Actor, in SaveInput) (*SaveResult, error) {
 	// 1) 表单：不存在则创建，存在则按补丁合并
 	form, formAction, unknown, err := s.upsertForm(ctx, tx, actor, in)
 	if err != nil {
@@ -271,9 +321,6 @@ func (s *Service) SaveRecord(ctx context.Context, actor Actor, in SaveInput) (*S
 	}
 	if err := s.writeAudit(ctx, tx, actor, action, "form_record", rec.ID, before, in.Raw, nil); err != nil {
 		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("提交事务失败: %w", err)
 	}
 
 	rec.Form = form

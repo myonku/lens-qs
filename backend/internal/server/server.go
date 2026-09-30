@@ -11,6 +11,8 @@ import (
 	authhttp "github.com/myonku/lens-qs-api/internal/auth/http"
 	"github.com/myonku/lens-qs-api/internal/dictionary"
 	dictionaryhttp "github.com/myonku/lens-qs-api/internal/dictionary/http"
+	"github.com/myonku/lens-qs-api/internal/idempotency"
+	idempotencyhttp "github.com/myonku/lens-qs-api/internal/idempotency/http"
 	"github.com/myonku/lens-qs-api/internal/inspection"
 	inspectionhttp "github.com/myonku/lens-qs-api/internal/inspection/http"
 	"github.com/myonku/lens-qs-api/internal/middleware"
@@ -25,13 +27,14 @@ import (
 
 // Deps 是构建路由所需的依赖。
 type Deps struct {
-	Cfg        *config.Config
-	Auth       *auth.Service
-	UserStore  *users.Store
-	Dict       *dictionary.Store
-	Sample     *sample.Service
-	Inspection *inspection.Service
-	Stats      *stats.Service
+	Cfg         *config.Config
+	Auth        *auth.Service
+	UserStore   *users.Store
+	Dict        *dictionary.Store
+	Sample      *sample.Service
+	Inspection  *inspection.Service
+	Stats       *stats.Service
+	Idempotency *idempotency.Store // 为 nil 时关闭幂等
 }
 
 // Build 组装并返回 gin 引擎。
@@ -68,6 +71,8 @@ func Build(d Deps) *gin.Engine {
 
 	// 需要登录的接口（认证是唯一硬边界；权限只有"普通用户 / 管理员"两级）
 	authed := api.Group("", middleware.Auth(d.Auth, d.Cfg.CookieName))
+	// 幂等：写接口在 TTL 内用相同幂等键重复提交时回放首次响应，避免弱网重试重复写入
+	authed.Use(idempotencyhttp.Middleware(d.Idempotency))
 	authH.RegisterAuthed(authed)
 	dictionaryhttp.New(d.Dict).Register(authed)
 	inspectionhttp.New(d.Inspection).Register(authed)

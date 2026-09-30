@@ -30,6 +30,9 @@ type Config struct {
 	CookieSecure   bool
 	CORSOrigins    []string
 
+	// 幂等（写接口重复提交保护）：<=0 表示关闭
+	IdempotencyTTL time.Duration
+
 	// Bootstrap
 	BootstrapAdminUser string
 	BootstrapAdminPass string
@@ -55,6 +58,8 @@ func Load() (*Config, error) {
 		CookieName:     env("COOKIE_NAME", "sid"),
 		CookieSecure:   envBool("COOKIE_SECURE", false),
 		CORSOrigins:    envList("CORS_ORIGINS", nil),
+
+		IdempotencyTTL: envDuration("IDEMPOTENCY_TTL", 24*time.Hour),
 
 		BootstrapAdminUser: env("BOOTSTRAP_ADMIN_USER", ""),
 		BootstrapAdminPass: env("BOOTSTRAP_ADMIN_PASS", ""),

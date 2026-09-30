@@ -15,6 +15,7 @@ import (
 
 	"github.com/myonku/lens-qs-api/internal/auth"
 	"github.com/myonku/lens-qs-api/internal/dictionary"
+	"github.com/myonku/lens-qs-api/internal/idempotency"
 	"github.com/myonku/lens-qs-api/internal/inspection"
 	"github.com/myonku/lens-qs-api/internal/pkg/config"
 	"github.com/myonku/lens-qs-api/internal/pkg/database"
@@ -63,19 +64,27 @@ func main() {
 	sampleSvc := sample.NewService(db, dictStore, cfg.DBDriver)
 	statsSvc := stats.NewService(db, cfg.DBDriver)
 
+	// 幂等：IDEMPOTENCY_TTL <= 0 时关闭
+	var idemStore *idempotency.Store
+	if cfg.IdempotencyTTL > 0 {
+		idemStore = idempotency.NewStore(db, cfg.DBDriver, cfg.IdempotencyTTL)
+		log.Printf("[info] 幂等已启用（TTL=%s；键来源：X-Idempotency-Key 或请求体 client_request_id）", cfg.IdempotencyTTL)
+	}
+
 	// 首次启动时按环境变量创建管理员（数据库为空时才创建）
 	if err := bootstrapAdmin(ctx, userStore, cfg); err != nil {
 		log.Printf("[warn] 初始化管理员失败: %v", err)
 	}
 
 	engine := server.Build(server.Deps{
-		Cfg:        cfg,
-		Auth:       authSvc,
-		UserStore:  userStore,
-		Dict:       dictStore,
-		Sample:     sampleSvc,
-		Inspection: inspSvc,
-		Stats:      statsSvc,
+		Cfg:         cfg,
+		Auth:        authSvc,
+		UserStore:   userStore,
+		Dict:        dictStore,
+		Sample:      sampleSvc,
+		Inspection:  inspSvc,
+		Stats:       statsSvc,
+		Idempotency: idemStore,
 	})
 
 	srv := &http.Server{

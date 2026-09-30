@@ -4,6 +4,7 @@ package inspectionhttp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -51,6 +52,10 @@ type saveReq struct {
 	Form       json.RawMessage `json:"form"`
 	Record     json.RawMessage `json:"record"`
 	Lines      json.RawMessage `json:"lines"`
+
+	// 幂等键：也可通过请求头 X-Idempotency-Key 或 X-Request-Id 传（见 middleware.Idempotency）。
+	// 由中间件消费，不参与字段合并。
+	ClientRequestID string `json:"client_request_id"`
 
 	// 批量：一次提交多笔（用于"次日一次性完整录入"）
 	Records []json.RawMessage `json:"records"`
@@ -256,8 +261,8 @@ func (h *Handler) saveRecordPatch(c *gin.Context) {
 }
 
 func (h *Handler) saveMany(c *gin.Context, req saveReq) {
-	results := make([]*inspection.SaveResult, 0, len(req.Records))
-	for _, raw := range req.Records {
+	ins := make([]inspection.SaveInput, 0, len(req.Records))
+	for i, raw := range req.Records {
 		var rp recordPatch
 		if err := json.Unmarshal(raw, &rp); err != nil {
 			// 兼容：直接把该元素当作 record 补丁
@@ -272,27 +277,35 @@ func (h *Handler) saveMany(c *gin.Context, req saveReq) {
 			Record:  rp.Record,
 			Lines:   rp.Lines,
 		}
-		res, err := h.doSave(c, sub, "")
+		in, err := h.buildInput(c, sub, "")
 		if err != nil {
-			httpx.Fail(c, err)
+			httpx.Fail(c, httpx.BadRequest(fmt.Sprintf("第 %d 笔: %s", i+1, err.Error())))
 			return
 		}
-		results = append(results, res)
+		ins = append(ins, *in)
 	}
-	httpx.OK(c, gin.H{"results": results, "count": len(results)})
+
+	// 整批一个事务：任一笔失败则整批回滚（避免留下"一半成功"的表单与笔）
+	results, err := h.svc.SaveBatch(c.Request.Context(), actorOf(c), ins)
+	if err != nil {
+		httpx.Fail(c, mapConstraintError(err, req.FormNo))
+		return
+	}
+	httpx.OK(c, gin.H{"results": results, "count": len(results), "atomic": true})
 }
 
-func (h *Handler) doSave(c *gin.Context, req saveReq, recordID string) (*inspection.SaveResult, error) {
+// buildInput 把 HTTP 请求转成服务层输入（不含执行）。
+func (h *Handler) buildInput(c *gin.Context, req saveReq, recordID string) (*inspection.SaveInput, error) {
 	formPatch, err := inspection.ParsePatch(req.Form)
 	if err != nil {
-		return nil, httpx.BadRequest("form 补丁格式不正确: " + err.Error())
+		return nil, fmt.Errorf("form 补丁格式不正确: %w", err)
 	}
 	recPatch, err := inspection.ParsePatch(req.Record)
 	if err != nil {
-		return nil, httpx.BadRequest("record 补丁格式不正确: " + err.Error())
+		return nil, fmt.Errorf("record 补丁格式不正确: %w", err)
 	}
 
-	in := inspection.SaveInput{
+	in := &inspection.SaveInput{
 		FormNo:      req.FormNo,
 		RecordID:    recordID,
 		SequenceNo:  req.SequenceNo,
@@ -311,13 +324,20 @@ func (h *Handler) doSave(c *gin.Context, req saveReq, recordID string) (*inspect
 	if len(req.Lines) > 0 && !isJSONNull(req.Lines) {
 		lines, err := decodeLines(req.Lines)
 		if err != nil {
-			return nil, httpx.BadRequest("lines 格式不正确: " + err.Error())
+			return nil, fmt.Errorf("lines 格式不正确: %w", err)
 		}
 		in.Lines = lines
 		in.LinesGiven = true
 	}
+	return in, nil
+}
 
-	return h.svc.SaveRecord(c.Request.Context(), actorOf(c), in)
+func (h *Handler) doSave(c *gin.Context, req saveReq, recordID string) (*inspection.SaveResult, error) {
+	in, err := h.buildInput(c, req, recordID)
+	if err != nil {
+		return nil, httpx.BadRequest(err.Error())
+	}
+	return h.svc.SaveRecord(c.Request.Context(), actorOf(c), *in)
 }
 
 func (h *Handler) getRecord(c *gin.Context) {
