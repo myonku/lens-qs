@@ -178,6 +178,7 @@ forms（form_no 唯一；样品信息 + 单位 + 创建信息）
   └──> units
 
 sample_parse_cache     sample_drawings（参考部件号，仅最佳努力匹配） ──> dict_items（各维度）
+idempotency_requests（写接口幂等：按 user_id + 幂等键回放首次响应，TTL 默认 24h）
 dict_items（工序 / 单位 / 样品段 / 不良类别文案）
 ```
 
@@ -756,7 +757,7 @@ saveRecord(input, actor, mode):
 
 | 机制 | 说明 |
 |---|---|
-| 幂等保存 | 请求携带 `clientRequestId`（UUID），服务端在 `AuditLog`/专用表中记录已处理的键，重复请求返回首次结果 |
+| 幂等保存 ✅ | 表 `idempotency_requests` + 中间件 `internal/idempotency/http`：请求头 `X-Idempotency-Key` 或请求体 `client_request_id` 作键，`(user_id, 键)` 唯一，命中则回放首次响应（`X-Idempotent-Replay: true`）；同键不同体返回 409；非 2xx 不缓存以便重试；TTL 由 `IDEMPOTENCY_TTL` 控制（默认 24h）。详见 §6.6 |
 | 增量合并的天然容错 | 调用方不需要先读后写整份数据，只提交本次填写的字段，减少冲突面 |
 | 乐观锁冲突 | 返回 `409` + 服务端当前内容 + 差异，调用方据业务判断是否重试 |
 | 字典缓存 | 字典接口返回 `version`/`etag`，调用方可长期缓存 |
@@ -777,106 +778,163 @@ saveRecord(input, actor, mode):
 
 ---
 
-## 6. 接口设计（REST 概要）
+## 6. 接口设计（REST）
 
-统一前缀 `/api`，响应 `{ code, message, data }`；错误使用 HTTP 语义码（400/401/404/409/422）。
-**除 `POST /auth/login` 外，所有接口都需要登录**（认证是唯一硬边界，权限放开，需求 B-14）。
+> **本节已按实际实现对齐**（v0.6）。字段命名一律 **snake_case**（JSON tag 与数据库列名一致）。
+> 逐接口的请求/响应示例、错误码表、字段中文名对照见 [`docs/api.md`](api.md)（面向前端对接，更详细）。
+
+统一前缀 `/api`，响应 `{ code, message, data }`；错误使用 HTTP 语义码。
+**除 `GET /healthz`、`GET /`、`POST /api/auth/login` 外，所有接口都需要登录**（认证是唯一硬边界；权限只有"普通用户 / 管理员"两级，需求 B-14）。
 
 ### 6.1 认证与用户
 | 方法 | 路径 | 说明 | 限制 |
 |---|---|---|---|
-| POST | `/auth/login` | 登录（返回用户信息；同时下发 Cookie 与 Bearer token） | 公开 |
-| POST | `/auth/logout` | 登出 | 登录 |
-| GET | `/auth/me` | 当前用户信息 | 登录 |
-| POST | `/auth/change-password` | 修改密码（含首次改密） | 登录 |
-| GET | `/users` | 用户列表 | **`isAdmin`** |
-| POST | `/users` | 创建用户 | **`isAdmin`** |
-| PATCH | `/users/:id` | 修改用户（启停、重置密码、设置 `isAdmin`） | **`isAdmin`** |
+| POST | `/api/auth/login` | 登录（返回 token；同时下发 Cookie） | 公开 |
+| POST | `/api/auth/logout` | 登出 | 登录 |
+| GET | `/api/auth/me` | 当前用户信息 | 登录 |
+| POST | `/api/auth/change-password` | 修改密码（会吊销全部会话） | 登录 |
+| GET | `/api/users` | 用户列表（分页 + `keyword`） | **管理员** |
+| POST | `/api/users` | 创建用户 | **管理员** |
+| PATCH | `/api/users/:id` | 修改用户（启停、重置密码、设置 `is_admin`） | **管理员** |
 
-> **已删除**：`/roles`、`/permissions` 相关接口（需求 B-14 无角色权限体系）。
+> 无 `/roles`、`/permissions` 接口（需求 B-14：不做角色权限体系）。
 
-### 6.2 字典
+### 6.2 字典、单位、参考部件号
 | 方法 | 路径 | 说明 | 限制 |
 |---|---|---|---|
-| GET | `/dict/items?category=` | 按类别取字典（含 `version` 便于缓存） | 登录 |
-| POST/PATCH | `/dict/items`、`/dict/items/:id` | 新增/修改/停用 | 登录 |
-| GET | `/dict/drawings?spec=&size=&side=&model=` | **参考**部件号查询（辅助选择） | 登录 |
-| POST | `/dict/drawings/import` | 批量导入参考部件号（Excel/CSV） | 登录 |
-| GET | `/dict/defect-columns` | 返回"不良类别 × 表面"列定义与顺序（供调用方渲染） | 登录 |
+| GET | `/api/dict/items?category=&include_inactive=` | 按类别取字典 | 登录 |
+| POST | `/api/dict/items` | 新增/更新字典项（按 category+code） | 登录 |
+| PATCH | `/api/dict/items/:id` | 改标签、排序、启停 | 登录 |
+| GET | `/api/dict/categories` | 返回全部字典类别 | 登录 |
+| GET | `/api/units?include_inactive=` | 单位列表 | 登录 |
+| POST | `/api/units` | 新增/更新单位 | 登录 |
+| GET | `/api/dict/drawings?project=&model=&spec=&size=&side=&keyword=` | **参考**部件号查询（最多 500 条） | 登录 |
+| POST | `/api/dict/drawings/import` | 批量导入（`items` 数组或制表符 `rows`） | 登录 |
+| GET | `/api/dict/defect-columns` | 不良列定义（类别 × 表面 + 顺序） | 登录 |
+
+> 字典接口当前**不返回** `version`/`etag`（无缓存协商字段）。
 
 ### 6.3 样品信息
 | 方法 | 路径 | 说明 | 限制 |
 |---|---|---|---|
-| POST | `/sample/parse` | 解析原始串 → 结构化字段 + 参考匹配 + 置信度 + `unmatchedReason`（**纯辅助，不写库**） | 登录 |
-| GET | `/sample/pending` | 待核对清单（`needsReview=true AND state=ACTIVE`） | 登录 |
-| POST | `/forms/:formNo/sample/confirm` | 人工确认/修正结构化字段（**不改写 `sampleRaw`**） | 登录 |
+| POST | `/api/sample/parse` | 解析原始串 → 结构化字段 + 参考匹配 + 置信度 + `unmatched_reason`（**纯辅助，不写库**） | 登录 |
+| POST | `/api/sample/confirm` | 人工确认/修正结构化字段（**不改写 `sample_raw`**） | 登录 |
+| GET | `/api/sample/cache?sample_raw=` | 查看规范化键与 token 切分 | 登录 |
+| GET | `/api/sample/pending` | 待核对清单（`needs_review=true`） | 登录 |
+| GET | `/api/forms/:formNo/sample/pending` | 某表单的样品信息提示 | 登录 |
 
-### 6.4 表单与笔（核心）
+### 6.4 表单与工序记录（核心）
 | 方法 | 路径 | 说明 | 限制 |
 |---|---|---|---|
-| GET | `/forms` | 表单列表（筛选：formNo / 日期区间 / 工序 / 样品各维度 / 检验人 / 单位 / 良率区间 / 含不良 / `needsReview` / `isComplete`） | 登录 |
-| GET | `/forms/:formNo` | **取表单及其全部笔与明细**（现场"接着填"与集中录入都靠它） | 登录 |
-| GET | `/forms/:formNo/summary` | 该表单的完成度汇总（多少笔、哪些未完整、`missingFields`） | 登录 |
-| POST | `/forms` | 新建表单（可只带 `formNo` + 样品信息） | 登录 |
-| PATCH | `/forms/:formNo` | 更新表单级字段（样品信息、单位等），**字段级合并** | 登录 |
-| POST | `/forms/:formNo/records` | **新建一笔工序记录**（含明细，可只填一部分） | 登录 |
-| PATCH | `/records/:id` | **保存/更新一笔**（字段级合并；明细提交则替换）—— 现场分次填写的主接口 | 登录 |
-| GET | `/records/:id` | 取一笔的完整内容 | 登录 |
-| GET | `/records/:id/history` | 该笔的全部历史快照（按 `saveCount` 倒序） | 登录 |
-| GET | `/records/:id/history/diff?from=&to=` | 两版之间的字段级 + 明细级差异 | 登录 |
-| POST | `/records/:id/void` | 作废（逻辑）+ 原因 | 登录 |
-| GET | `/forms/:formNo/export` | 导出该表单为 Excel（复刻纸质表单布局的数据） | 登录 |
-| GET | `/stats/incomplete-forms` | 未完成表单清单（存在 `isComplete=false` 的笔） | 登录 |
+| GET | `/api/forms` | 表单列表（`keyword` / `state` / `needs_review` / `from` / `to` / `sample_project` / `sample_model` / `sample_spec` / `sample_size` / `sample_side` / `unit` + 分页） | 登录 |
+| POST | `/api/forms` | 新建表单（可只带 `form_no` + 样品信息），返回 **201** | 登录 |
+| GET | `/api/forms/:formNo` | **取表单及其全部笔与明细**（现场"接着填"与集中录入都靠它） | 登录 |
+| PATCH | `/api/forms/:formNo` | 更新表单级字段（**字段级合并**），返回 **200** | 登录 |
+| POST | `/api/forms/:formNo/records` | **新建一笔**；带 `records` 数组时批量提交多笔（整批原子） | 登录 |
+| GET | `/api/records/:id` | 取一笔的完整内容（含明细） | 登录 |
+| PATCH | `/api/records/:id` | **保存/更新一笔**（字段级合并；明细提交则整笔替换）—— 分次填写的主接口 | 登录 |
+| POST | `/api/records/:id/void` | 逻辑作废 + 原因 | 登录 |
+| GET | `/api/records/:id/history` | 该笔的全部历史快照（按 `save_count` 倒序） | 登录 |
+| GET | `/api/records/:id/history/diff?from=&to=` | 两版之间的字段级 + 明细级差异（`to=current` 表示当前） | 登录 |
+| GET | `/api/audit-logs?entity=&entity_id=&limit=` | 操作日志检索 | 登录 |
 
-**保存请求约定（`POST /forms/:formNo/records` 与 `PATCH /records/:id` 共用）**
+> **尚未实现**（需求已确认、待后续）：`GET /forms/:formNo/summary`（表单完成度汇总）、`GET /forms/:formNo/export`、`GET /forms/export`（导出）。
+> 表单完成度可由 `GET /api/forms/:formNo` 里每笔的 `is_complete` / `missing_fields` 自行汇总。
+
+**保存请求（`POST /forms/:formNo/records` 与 `PATCH /records/:id` 共用；批量时用 `records` 数组）**
 
 ```jsonc
 {
-  "mode": "incremental",          // incremental（默认，弱校验）| full（强校验）
-  "sequenceNo": 2,                // 新建笔时可省略；更新时由 URL 指定
-  "expectedSaveCount": 1,         // 可选：乐观锁
-  "clientRequestId": "uuid",      // 可选：幂等键
-  "reason": "补填二次加硬",         // 可选：变更原因，写入历史
-  "form": {                       // 可选：本次要改动的表单级字段
-    "sampleRaw": "M2 S2 ND2 SMR",
-    "sampleProject": "M2",
-    "unitId": "u-01"
+  "enforce": "warn",              // warn（默认，只警告不阻断）| strict（拦下自相矛盾的数据）
+  "mode": "merge",                // merge（默认，字段级合并）| replace（整体替换）
+  "sequence_no": 2,               // 可选：指定笔序号；不传则自动递增（仅在单笔提交时有效）
+  "expected_save_count": 1,       // 可选：乐观锁，不匹配返回 409
+  "client_request_id": "uuid",    // 可选：幂等键（也可用请求头 X-Idempotency-Key）
+  "reason": "补填二次加硬",         // 可选：变更原因，写入历史与操作日志
+  "form": {                       // 可选：本次要改动的表单级字段（只提交要改的）
+    "sample_raw": "M2 S2 ND2 SMR",
+    "sample_project": "M2",
+    "unit_id": "u-01"
   },
   "record": {                     // 可选：本次要改动的笔级字段
-    "processCode": "一次加硬",
-    "submittedBy": "李四", "submittedAt": "2026-09-08T09:00:00+08:00",
-    "inspectedBy": "张赛赛", "inspectedAt": "2026-09-09T10:30:00+08:00",
-    "machineOperator": "王五", "handoverBy": "赵六"
+    "process_code": "一次加硬",
+    "submitted_by": "李四", "submitted_at": "2026-09-08T09:00:00+08:00",
+    "inspected_by": "张赛赛", "inspected_at": "2026-09-09T10:30:00+08:00",
+    "machine_operator": "王五", "handover_by": "赵六"
   },
   "lines": [                      // 可选：出现即整笔替换本笔明细
-    { "seq": 1, "totalQty": 100, "qualifiedQty": 100, "defectQty": 0 }
+    { "seq": 1, "total_qty": 100, "qualified_qty": 100, "defect_qty": 0 }
   ]
 }
 ```
 
-**响应返回**（每次保存都返回，便于调用方即时提示）：
+**响应（每次保存都返回，便于调用方即时提示）**
 
 ```jsonc
 {
-  "action": "save",               // create | save
-  "form": { "formNo": "...", "recordCount": 3 },
-  "record": { "id": "...", "sequenceNo": 2, "saveCount": 2,
-              "isComplete": false, "missingFields": ["machineOperator"],
-              "totalQty": 100, "qualifiedQty": 100, "defectQty": 0, "passRate": 100 },
-  "issues": [ { "code": "V-10", "level": "warning",
-                "field": "machineOperator", "message": "操机员未填写" } ]
+  "code": "ok", "message": "",
+  "data": {
+    "action": "create_record",    // create_form | create_record | save_record | update_form | create_form+create_record
+    "form":   { "id": "...", "form_no": "M-260908-01", "sample_raw": "..." },
+    "record": { "id": "...", "sequence_no": 1, "save_count": 1,
+                "is_complete": false,
+                "missing_fields": ["submitted_by", "machine_operator"],
+                "total_qty": 100, "qualified_qty": 100, "defect_qty": 0, "pass_rate": 100 },
+    "issues":   [ { "rule": "V-10", "level": "warning",
+                    "field": "submitted_by", "message": "表单既有栏目「送检人」尚未填写" } ],
+    "warnings": [ /* 同 issues 中的 warning */ ],
+    "errors":   [],
+    "missing_fields": ["submitted_by", "machine_operator"],
+    "is_complete": false
+  }
 }
 ```
 
-### 6.5 统计与导出
+**批量提交**（次日集中录入）：把 `records` 传成数组，整批**在同一个事务内**保存，任一笔失败则整批回滚：
+
+```jsonc
+{
+  "enforce": "warn",
+  "form": { "sample_raw": "M1 S1 MD L VID1 Rx", "sample_project": "M1" },
+  "records": [
+    { "record": { "process_code": "一次加硬" }, "lines": [ { "total_qty": 200, "qualified_qty": 198, "defect_qty": 2 } ] },
+    { "record": { "process_code": "二次加硬" }, "lines": [ { "total_qty": 200, "qualified_qty": 200 } ] }
+  ]
+}
+// -> { "data": { "results": [ …两笔… ], "count": 2, "atomic": true } }
+```
+
+### 6.5 汇总统计
 | 方法 | 路径 | 说明 | 限制 |
 |---|---|---|---|
-| GET | `/stats/summary?from=&to=&groupBy=day\|process\|sampleSize` | 良率与计数汇总 | 登录 |
-| GET | `/stats/defects?from=&to=&groupBy=` | 不良分类分布（**标注"子项合计可大于不良品数"**，见需求 Q5） | 登录 |
-| GET | `/stats/workload?from=&to=` | 按检验员工作量 | 登录 |
-| GET | `/stats/save-activity?from=&to=` | 保存/修改频次（数据质量监控） | 登录 |
-| GET | `/forms/export` | 导出 Excel/CSV（按当前筛选） | 登录 |
-| GET | `/audit-logs` | 操作日志检索 | 登录 |
+| GET | `/api/stats/dimensions` | 可用分组维度列表 | 登录 |
+| GET | `/api/stats/summary?group_by=sample_spec,sample_size&from=&to=&…` | 按维度分组汇总（最多 500 组） | 登录 |
+| GET | `/api/stats/defects?from=&to=&…` | 不良类别 × 表面分布 | 登录 |
+| GET | `/api/stats/workload?by=inspected_by\|recorded_by\|last_saved_by` | 工作量统计（最多 200 组） | 登录 |
+| GET | `/api/stats/incomplete-forms?limit=` | 未完成表单清单 | 登录 |
+| GET | `/api/audit-logs` | 操作日志检索（默认 100，上限 500） | 登录 |
+
+**`group_by` 白名单（16 个维度，取值必须是 snake_case）**：
+`sample_project`、`sample_model`、`sample_spec`、`sample_size`、`sample_side`、`sample_class`、`sample_raw`、`form_no`、`process`、`unit`、`inspected_by`、`submitted_by`、`machine_operator`、`handover_by`、`day`、`month`（可任意组合）。
+筛选参数（`summary` / `defects` / `workload` 共用）：`from`、`to`、`process`、`sample_project`、`sample_model`、`sample_spec`、`sample_size`、`sample_side`、`inspected_by`、`unit`、`include_void`。
+
+> **统计口径提示**：不良子项合计可能大于不良品数（同一片镜片可计入多个类别，需求 Q5，登记待定）。
+> **尚未实现**：`/stats/save-activity`、导出接口（Excel/CSV）。
+
+### 6.6 幂等（写接口重复提交保护）
+
+写方法（`POST`/`PATCH`/`PUT`/`DELETE`）支持幂等键：
+
+| 项 | 说明 |
+|---|---|
+| 键来源 | 请求头 `X-Idempotency-Key`（或 `Idempotency-Key`）优先；其次请求体 `client_request_id`（或 `clientRequestId` / `idempotency_key`） |
+| 作用域 | `(user_id, idempotency_key)`，不同用户互不影响 |
+| 命中行为 | 请求体指纹一致 → **回放首次响应**，响应头 `X-Idempotent-Replay: true`；指纹不同 → `409 conflict` |
+| 不缓存的响应 | 非 2xx（失败）不写幂等记录，允许用同一个键重试 |
+| 有效期 | `IDEMPOTENCY_TTL`（默认 24h；`<=0` 关闭该功能） |
+| 存储 | 表 `idempotency_requests`（迁移 `0002_idempotency`）；读取时顺手清理过期记录 |
+
+> 幂等表故障**不阻断业务**（记录错误后照常处理请求），保证"保护机制本身不会成为故障点"。
 
 ---
 
@@ -985,3 +1043,4 @@ saveRecord(input, actor, mode):
 | v0.2 | 第二轮确认后 | ① 删除审批状态机与 `DocReview`，改为 UPSERT 覆盖 + `DocHistory` 快照（§4.2.3、§4.3、§5.6）；② `formNo` 升为记录唯一键，新增并发乐观锁与 409 约定；③ 样品信息改为"原始输入优先"，冗余字段不校验、不作验收（§5.1、§5.2）；④ 表头删除送检人/操机员/交接员；⑤ 校验 V-2 降级为 warning、新增 V-9、明确只有 V-1/V-3/V-4/V-6/V-7 具阻断力；⑥ 权限点与 API 随之调整（删除 submit/review/revise，新增 history/diff）；⑦ 前端路由删除 `/review`，新增历史差异视图；⑧ 里程碑、测试策略、风险表更新 | — |
 | **v0.3** | 第三轮确认后 | ① **数据模型改为三层**：`Form` / `FormRecord` / `RecordLine` + `RecordHistory`（§4.1、§4.2.3）；② **保存语义改为字段级合并**，`mode: incremental \| full` 控制校验强度（§5.6）；③ **恢复表单既有栏目**并新增 `recordedBy` 区分"表单上的人"与"录入人"（§4.2.3、Q18）；④ **删除 RBAC 四张表**，改为 `User.isAdmin` + 可替换的 `AuthorizationService`（§4.2.1、§5.5）；⑤ **新增完成度** `isComplete` / `missingFields` / 未完成表单清单（§5.7、§6.4）；⑥ API 全面调整（`/forms`、`/records`、history/diff、defect-columns），删除 roles 接口；⑦ **删除前端目录与页面章节**，改为"接口使用场景"（§3、§5.9）；⑧ 校验新增 V-10、V-6 降级为 warning、按 mode 分级（§5.3）；⑨ 性能、安全、测试、里程碑、风险表全部更新 | — |
 | **v0.5** | 骨架落地后（实现回写） | ① **技术栈落定并已实现**：Go 1.24 + Gin + sqlx，SQLite / PostgreSQL 双驱动（§1.3、§2）；② 表定义改为**手写 SQL 迁移**（`backend/migrations/{sqlite,postgres}/`），§4.2 的 Prisma 风格 DDL 仅作可读表结构说明；③ 时间列统一 **TEXT + UTC RFC3339**，双库行为一致（§4.2）；④ 校验参数由 `mode: incremental\|full` 改为 **`enforce: warn\|strict`**（与需求 v0.4 对齐），并明确 V-2/V-6/V-8/V-9/V-10 **任何模式都不阻断**；⑤ 仓库结构定为**单一仓库**：`lens-qs` 为项目根，`docs/` 与 `backend/` 平级，前端将来放 `frontend/`（§3）；⑥ 权限收敛为**两级**（普通用户 / 管理员，§5.5）；⑦ **汇总统计的通用 `group_by` 已实现**（需求 §4.7 的基础能力已具备）；⑧ 测试策略按实际落地的用例清单更新 | — |
+| **v0.6** | 幂等与批量补丁后 | ① **§6 接口清单按实际实现对齐**（path 全部带 `/api` 前缀、字段名 snake_case、`mode: merge\|replace` + 独立 `enforce`、`Issue.rule`；标注尚未实现的 `/forms/:formNo/summary`、导出、`/stats/save-activity`）；② **新增 §6.6 幂等设计**并新增表 `idempotency_requests`（迁移 `0002_idempotency`）；③ **批量提交改为整批原子**（`SaveBatch` 同事务，失败整批回滚）；④ §4.1 ER 概览与 §5.8 同步更新 | — |

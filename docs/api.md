@@ -109,12 +109,12 @@
 
 | 约定 | 说明 |
 |---|---|
-| **无幂等键** | 代码未实现 `clientRequestId`（design.md 提到但未落地）。重复提交同一请求会**重复写历史快照与审计日志**，`save_count` 递增 |
+| **幂等键（已支持）** | 写方法（POST/PATCH/PUT/DELETE）支持幂等：请求头 `X-Idempotency-Key`（或 `Idempotency-Key`）优先，其次请求体 `client_request_id` / `clientRequestId` / `idempotency_key`。作用域 `(user_id, 键)`；命中且请求体指纹一致 → **回放首次响应**（响应头 `X-Idempotent-Replay: true`）；指纹不同 → `409`；**非 2xx 不缓存**（可用同键重试）；TTL 由 `IDEMPOTENCY_TTL` 控制（默认 24h）。见 §4.7 |
 | 重复提交防护 | 更新已存在记录时用 `expected_save_count` 乐观锁；或先 `GET` 再提交 |
 | `POST /api/forms/{formNo}/records` 的幂等性 | **带** `sequence_no` → 定位到该序号（不存在则新建），重复提交只更新同一笔；**不带** `sequence_no` → 每次调用**新建一笔**（重复提交会造出多笔） |
 | 乐观锁 | 仅对**已存在**记录生效；`expected_save_count` 与库里 `save_count` 不等 → `409`，`details` 里带当前记录与 `current_save_count`。新建记录时该参数被忽略 |
 | 事务与行锁 | 每次保存/作废在单事务内完成；PostgreSQL 下对 `forms` / `form_records` 目标行 `SELECT ... FOR UPDATE`，SQLite 下为库级写锁 |
-| 批量写入 | `records` 数组**逐笔独立事务**，**非原子**：中途某笔报错时，前面的笔已提交 |
+| 批量写入 | `records` 数组在**同一个事务内**逐笔保存，**整批原子**：中途某笔报错则整批回滚（表单与已保存的笔都不落库），响应含 `"atomic": true`。错误消息会带"第 N 笔"定位 |
 | 明细替换 | `lines` 一旦提交即**整笔替换**（先 `DELETE` 再 `INSERT`），行 `id` 每次重建，不做行级合并 |
 | 唯一约束 | `forms.form_no`、`form_records(form_id, sequence_no)`、`record_lines(record_id, seq)`；`lines` 内重复 `seq` 会撞唯一约束 → **`409 conflict`** |
 | 循环/重试建议 | 收到 `409` → 用 `details.current` 覆盖本地状态，让用户确认后重试；收到 `401` → 重新登录；收到 `422` → 展示 `details` 里的 `error` 问题并修正数据 |
@@ -919,10 +919,11 @@
 | `enforce` | string | 否 | `warn` | `warn` \| `strict`（大小写不敏感；其它值 = warn） |
 | `reason` | string | 否 | 空 | 变更原因，写入 `record_history.reason` |
 | `expected_save_count` | int | 否 | 空 | 乐观锁：仅对**已存在**记录生效，与库里 `save_count` 不等 → **409** |
+| `client_request_id` | string | 否 | 空 | **幂等键**（snake_case）。等价于请求头 `X-Idempotency-Key`（**请求头优先**）；也接受 `clientRequestId` / `idempotency_key`。详见 §4.7 |
 | `form` | object | 否 | — | 表单级**字段补丁**（对已存在表单做字段级合并；表单不存在则先创建） |
 | `record` | object | 否 | — | 笔级**字段补丁** |
 | `lines` | object[] | 否 | — | **出现即整笔替换**该笔明细（含空数组 `[]` = 清空明细）；缺省或 `null` = 保持库中明细不变 |
-| `records` | object[] | 否 | — | **批量模式**（仅 `POST /api/forms/:formNo/records` 支持）：元素形如 `{"record": {...}, "lines": [...]}` |
+| `records` | object[] | 否 | — | **批量模式**（仅 `POST /api/forms/:formNo/records` 支持）：元素形如 `{"record": {...}, "lines": [...]}`；**整批原子** |
 
 **字段级合并语义（`Patch.Merge`）**
 
@@ -1188,10 +1189,10 @@ Content-Type: application/json
 
 1. 只支持 `POST /api/forms/:formNo/records`；`PATCH /api/records/:id` 即使带 `records` 也**不会**走批量逻辑（该字段被忽略）。
 2. 元素结构必须是 `{"record": {...}, "lines": [...]}`。**元素若是对象但缺 `record` 键，会被解析成空补丁且不报错**（结果：新建一笔空白记录）。只有元素根本不是 JSON 对象时才会走"把整个元素当作 `record` 补丁"的兼容分支，而这种元素随后通常以 `400 record 补丁格式不正确` 失败。
-3. **顶层 `sequence_no` 与 `expected_save_count` 在批量模式下不生效**（不复制到子请求）→ 每一笔都新建，且无乐观锁。
-4. 逐笔**独立事务**，**非原子**：第 2 笔报错时第 1 笔已落库，前端需自行重试剩余部分。
+3. **顶层 `sequence_no` 与 `expected_save_count` 在批量模式下不生效**（不会被复制到各笔）→ 每一笔都新建（序号自动递增），且无乐观锁。
+4. **整批在同一个事务内保存，是原子的**：任一笔失败（400/409/422）→ 整批回滚，**表单与已保存的笔都不会落库**，响应含 `"atomic": true`。错误消息会带"第 N 笔"用于定位。
 5. 顶层 `form` / `mode` / `enforce` / `reason` 会套用到每个元素；`mode=replace` 时先清空笔级字段。
-6. 任一元素返回错误（400/409/422/500）时，整个响应即为该错误，**已成功的笔不会回滚**。
+6. 批量成功时 `results` 与 `records` 一一对应、顺序一致；`count` 为笔数。
 
 #### 4.5.5 保存的典型错误
 
@@ -1400,6 +1401,46 @@ GET /api/records/9a77…/history/diff?from=h-01&to=current
 * `detail`：仅作废接口写入原因。
 * `action` 取值：`create_form`、`update_form`（entity=`form`）；`create_record`、`save_record`、`create_form+create_record`、`void_record`（entity=`form_record`）。
   > 代码注释里提到的 `replace_record` **不会出现**（`mode=replace` 时 action 仍是 `save_record`）。
+
+---
+
+### 4.7 幂等（写接口重复提交保护）
+
+写方法（`POST` / `PATCH` / `PUT` / `DELETE`）都支持幂等键，用于**弱网重试**场景——避免重复写入（重复的历史快照与操作日志、重复的笔）。
+
+| 项 | 说明 |
+|---|---|
+| 键来源（优先级） | 1) 请求头 `X-Idempotency-Key` → 2) 请求头 `Idempotency-Key` → 3) 请求体 `client_request_id` → 4) `clientRequestId` → 5) `idempotency_key` / `idempotencyKey` |
+| 作用域 | `(user_id, 幂等键)` 唯一；**不同用户互不影响** |
+| 命中且请求体一致 | **直接回放首次响应**（同状态码、同响应体），响应头 `X-Idempotent-Replay: true`，**不执行**任何写操作 |
+| 命中但请求体不同 | `409 {"code":"conflict","message":"幂等键已被使用且请求内容不同…","details":{"idempotency_key":"…"}}` |
+| 失败响应 | **非 2xx 不写入幂等记录**，因此可以用同一个键重试直到成功 |
+| 有效期 | 环境变量 `IDEMPOTENCY_TTL`，默认 `24h`；设为 `<=0` 时**关闭**该功能 |
+| 存储 | 表 `idempotency_requests`；读取时顺手清理过期记录 |
+| 键的持久性 | 键由客户端生成（建议 UUID）。**同一业务动作务必复用同一个键**；不同动作不要复用同一个键 |
+
+**示例：弱网重试不会写两遍**
+
+```bash
+# 第 1 次（网络超时但服务端已成功）
+curl -X POST 'http://127.0.0.1:8080/api/forms/M-260908-01/records' \
+  -H 'Authorization: Bearer <token>' -H 'Content-Type: application/json' \
+  -H 'X-Idempotency-Key: 6f1a8b2c-…' \
+  -d '{"record":{"process_code":"一次加硬"},"lines":[{"total_qty":100,"qualified_qty":100}]}'
+
+# 客户端重试（同一个键）→ 回放首次响应，不会新增第二笔
+curl -X POST 'http://127.0.0.1:8080/api/forms/M-260908-01/records' \
+  -H 'Authorization: Bearer <token>' -H 'Content-Type: application/json' \
+  -H 'X-Idempotency-Key: 6f1a8b2c-…' \
+  -d '{"record":{"process_code":"一次加硬"},"lines":[{"total_qty":100,"qualified_qty":100}]}'
+# 响应头含：X-Idempotent-Replay: true，body 与首次完全一致
+```
+
+**注意**
+
+* 幂等记录只保存**响应体与状态码**；回放时不会重新设置其它业务响应头。
+* 幂等表的读写故障**不会阻断业务**（服务端记录错误后照常处理请求）——保护机制不会成为故障点。
+* 与**乐观锁**的区别：乐观锁（`expected_save_count`）防的是"两个不同的人同时改同一笔"；幂等键防的是"同一个请求被重复提交"。
 
 ---
 
@@ -1795,7 +1836,7 @@ GET /api/stats/summary?group_by=sample_project,sample_size&from=2026-05-01&to=20
 | JSON 字段 camelCase（`formNo`、`totalQty`、`expectedSaveCount`） | **全部 snake_case**（`form_no`、`total_qty`、`expected_save_count`） |
 | `mode: incremental \| full` | `mode: merge \| replace`；校验强度由**独立参数** `enforce: warn \| strict` 控制 |
 | `Issue.code` | `Issue.rule` |
-| `clientRequestId` 幂等键 | **未实现**（请求里传了也会被忽略） |
+| `clientRequestId` 幂等键 | **已实现**：优先读请求头 `X-Idempotency-Key`，其次请求体 `client_request_id`（snake_case）；命中回放首次响应并带 `X-Idempotent-Replay: true` |
 | `POST /forms/:formNo/sample/confirm` | 实际为 `POST /api/sample/confirm`（body 带 `sample_raw`） |
 | `GET /forms/:formNo/summary` | **未实现**（可用 `GET /api/forms/:formNo/sample/pending` 与笔上的 `is_complete`/`missing_fields` 替代） |
 | `GET /forms/:formNo/export`、`GET /forms/export` | **未实现**（当前无导出接口） |
