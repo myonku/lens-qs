@@ -51,7 +51,12 @@ func Build(d Deps) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{
 			"name":    "lens-qs-api",
 			"version": "0.1.0",
-			"docs":    "见 lens-qs/docs/requirements.md 与 lens-qs/docs/design.md",
+			"docs": gin.H{
+				"requirements": "docs/requirements.md",
+				"design":       "docs/design.md",
+				"features":     "docs/features.md",
+				"api":          "docs/api.md",
+			},
 		})
 	})
 
