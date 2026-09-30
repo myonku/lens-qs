@@ -1,0 +1,45 @@
+# ── 依赖与构建产物 ──
+node_modules/
+dist/
+build/
+out/
+coverage/
+*.tsbuildinfo
+
+# ── 环境变量与密钥 ──
+.env
+.env.*
+!.env.example
+
+# ── 日志与临时文件 ──
+*.log
+npm-debug.log*
+pnpm-debug.log*
+tmp/
+temp/
+
+# ── 本地数据库（开发期 SQLite）──
+data/*.db
+data/*.db-journal
+data/*.sqlite
+data/*.sqlite3
+
+# ── 上传/导出产物 ──
+uploads/
+exports/
+*.xlsx
+*.pdf
+!docs/**/*.pdf
+
+# ── 备份 ──
+backups/
+*.dump
+*.sql.gz
+
+# ── 编辑器与系统 ──
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+desktop.ini
