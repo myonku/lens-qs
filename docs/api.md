@@ -103,7 +103,7 @@
 | `not_found` | 404 | 表单 / 工序记录 / 字典项 / 历史快照 / 用户不存在 |
 | `conflict` | 409 | 乐观锁冲突（`expected_save_count` 不匹配）；创建用户时登录名已存在 |
 | `validation_failed` | 422 | `enforce=strict` 时存在 `error` 级校验问题，`details` 为 error 级 `Issue` 数组 |
-| `internal_error` | 500 | 未识别错误、panic；**唯一约束冲突（如 `form_no` / `(form_id, sequence_no)` 重复）也落在这里**（服务端未做业务码映射） |
+| `conflict` | 409 | 唯一性冲突（V-7）：明细行 `seq` 重复等；也用于乐观锁 `expected_save_count` 不匹配 |
 
 ### 1.6 幂等与并发约定
 
@@ -116,7 +116,7 @@
 | 事务与行锁 | 每次保存/作废在单事务内完成；PostgreSQL 下对 `forms` / `form_records` 目标行 `SELECT ... FOR UPDATE`，SQLite 下为库级写锁 |
 | 批量写入 | `records` 数组**逐笔独立事务**，**非原子**：中途某笔报错时，前面的笔已提交 |
 | 明细替换 | `lines` 一旦提交即**整笔替换**（先 `DELETE` 再 `INSERT`），行 `id` 每次重建，不做行级合并 |
-| 唯一约束 | `forms.form_no`、`form_records(form_id, sequence_no)`、`record_lines(record_id, seq)`；`lines` 内重复 `seq` 会撞唯一约束 → `500` |
+| 唯一约束 | `forms.form_no`、`form_records(form_id, sequence_no)`、`record_lines(record_id, seq)`；`lines` 内重复 `seq` 会撞唯一约束 → **`409 conflict`** |
 | 循环/重试建议 | 收到 `409` → 用 `details.current` 覆盖本地状态，让用户确认后重试；收到 `401` → 重新登录；收到 `422` → 展示 `details` 里的 `error` 问题并修正数据 |
 
 ---
@@ -139,7 +139,7 @@
 | **V-4** | 所有计数为非负整数 | warning | **是**（升级为 error） | 同上 |
 | **V-5** | 良率派生（`qualified_qty / total_qty * 100`，四舍五入 2 位，`total_qty=0` 时 `pass_rate` 为 `null`） | **仅计算，从不产生 Issue** | 否 | `ComputeTotals` |
 | **V-6** | 时间顺序：送检时间 ≤ 检验时间；检验时间 ≤ 当前时间 | warning | **否，恒为 warning** | `ValidateRecord` |
-| **V-7** | 唯一性（`form_no` 唯一、`(form_id, sequence_no)` 唯一、`(record_id, seq)` 唯一） | **数据库唯一索引保证**，不产生 Issue | 否（但冲突会导致 500，见 §1.5） | migrations + store |
+| **V-7** | 唯一性（`form_no` 唯一、`(form_id, sequence_no)` 唯一、`(record_id, seq)` 唯一） | **数据库唯一索引保证**，不产生 Issue | 否（但冲突返回 **`409 conflict`**，见 §1.5） | migrations + store |
 | **V-8** | 样品信息与参考部件号清单不匹配（`needs_review=true`） | warning | **否，恒为 warning** | `ValidateForm` |
 | **V-9** | 结构化项缺失（`sample_project` 为空，M1/M2） | warning | **否，恒为 warning** | `ValidateRecord` |
 | **V-10** | 表单既有栏目缺失（`submitted_by` / `submitted_at` / `inspected_by` / `inspected_at` / `machine_operator` / `handover_by`，以及表单级 `sample_raw`、`unit_id`+`unit_text` 全空） | warning | **否，恒为 warning** | `ValidateRecord` / `ValidateForm` |
@@ -767,9 +767,15 @@
 | `needs_review` | string | 仅 `"true"` 时过滤待核对 | |
 | `from` | string | 空 | `created_at >= from`（字符串比较） |
 | `to` | string | 空 | 服务端拼成 `to + "T23:59:59Z"` 后做 `created_at <=` |
+| `sample_project` | string | 空 | 精确匹配样品「项目」（M1/M2 等） |
+| `sample_model` | string | 空 | 精确匹配样品「型号」 |
+| `sample_spec` | string | 空 | 精确匹配样品「规格」 |
+| `sample_size` | string | 空 | 精确匹配样品「大小」 |
+| `sample_side` | string | 空 | 精确匹配样品「左右」 |
+| `unit` | string | 空 | 精确匹配 `COALESCE(unit_text, unit_id)` |
 | `page` / `page_size` | int | 1 / 20 | `page_size > 200` 回落 20 |
 
-> ⚠️ `FormFilter` 里虽有 `project`/`model`/`spec`/`size`/`side`/`unit` 字段，但 **handler 未从查询参数读取**，传了也无效。
+> 样品维度与单位筛选可任意组合（多条件为 AND）。例：`?sample_spec=S2&sample_size=MD&state=ACTIVE`。
 
 ```json
 {
@@ -838,7 +844,7 @@
 }
 ```
 
-**典型错误**：`400` 表单号（form_no）不能为空 / 存在无法识别的表单字段（`details` 为键名数组）/ 请求体格式不正确；`500` `form_no` 唯一约束冲突（并发建同号）。
+**典型错误**：`400` 表单号（form_no）不能为空 / 存在无法识别的表单字段（`details` 为键名数组）/ 请求体格式不正确。
 
 #### GET /api/forms/:formNo
 
@@ -895,7 +901,7 @@
 
 响应 **200**（注意：即使是新建表单也返回 200，而非 201），`data` 为 `SaveResult`，`action` 为 `create_form` 或 `update_form`。
 
-**典型错误**：`400` 存在无法识别的表单字段；`500` 唯一约束冲突。
+**典型错误**：`400` 存在无法识别的表单字段；`409` 唯一性冲突（如明细行 `seq` 重复）。
 
 ---
 
@@ -931,7 +937,7 @@
 **`lines` 提交即整笔替换**
 
 * 先 `DELETE FROM record_lines WHERE record_id=?` 再逐行 `INSERT`；行 `id` / `record_id` / `created_at` / `updated_at` 由服务端重建，**提交时忽略**。
-* `seq <= 0` 时按数组下标自动编为 1..n；**显式传入重复 `seq` 会撞唯一约束 → 500**。
+* `seq <= 0` 时按数组下标自动编为 1..n；**显式传入重复 `seq` 会撞唯一约束 → 409 conflict**。
 * 行内字段**缺省即 0**（不是"保持不变"），所以替换时必须提交该行的完整计数。
 * `lines` 不是数组（如 `{}`）→ `400 lines 格式不正确`。
 
@@ -1199,7 +1205,7 @@ Content-Type: application/json
 | 笔不属于路径上的表单 | `400 {"code":"bad_request","message":"该工序记录不属于指定表单"}` |
 | 乐观锁冲突 | 见下 |
 | strict 校验失败 | 见 §2.3 |
-| `lines` 内 `seq` 重复 / `form_no` 重复 | `500 {"code":"internal_error","message":"服务器内部错误"}`（唯一约束未做业务码映射） |
+| `lines` 内 `seq` 重复 | `409 {"code":"conflict","message":"明细行序号重复（V-7：(record_id, seq) 唯一）"}` |
 
 **409 乐观锁示例**
 
@@ -1603,7 +1609,7 @@ GET /api/stats/summary?group_by=sample_project,sample_size&from=2026-05-01&to=20
 |---|---|---|---|
 | ID | string | `id` | 服务端重建，**提交时忽略** |
 | RecordID | string | `record_id` | 服务端设置，**提交时忽略** |
-| Seq | int | `seq` | 行号。`<=0` 时按数组下标自动编 1..n；重复 → 唯一约束 500 |
+| Seq | int | `seq` | 行号。`<=0` 时按数组下标自动编 1..n；重复 → `409 conflict` |
 | TotalQty | int | `total_qty` | 检验总数（缺省 0） |
 | QualifiedQty | int | `qualified_qty` | 合格品 |
 | DefectQty | int | `defect_qty` | 不良品 |
@@ -1796,7 +1802,8 @@ GET /api/stats/summary?group_by=sample_project,sample_size&from=2026-05-01&to=20
 | `GET /stats/save-activity` | **未实现**（可用 `GET /api/audit-logs` 近似） |
 | `GET /dict/items` 返回 `version` | **不返回** `version`/`etag`（无缓存协商字段） |
 | `POST /forms` 与 `PATCH /forms/:formNo` 的区别 | 二者都走同一保存逻辑；`POST` 需 body 里的 `form_no` 且返回 **201**，`PATCH` 用路径参数且返回 **200**（表单不存在时同样会创建） |
-| 表单列表筛选（工序 / 样品维度 / 良率 / isComplete） | **未实现**：仅支持 `keyword` / `state` / `needs_review` / `from` / `to` + 分页 |
+| 表单列表筛选（工序 / 样品维度 / 良率 / isComplete） | **部分已实现**：`keyword` / `state` / `needs_review` / `from` / `to` / **`sample_project` / `sample_model` / `sample_spec` / `sample_size` / `sample_side` / `unit`** + 分页；**工序、良率区间、isComplete 仍未支持** |
+| 唯一约束冲突（`lines` 内 `seq` 重复） | 已映射为 **`409 conflict`**（不再是 500） |
 | `?groupBy=day\|process\|sampleSize` | 参数名为 **`group_by`**，取值必须用白名单里的 snake_case（`sample_size`） |
 | 路径 `/auth/login` 等 | 全部带 `/api` 前缀 → `/api/auth/login` 等 |
 

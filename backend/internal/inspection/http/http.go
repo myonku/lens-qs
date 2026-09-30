@@ -3,6 +3,7 @@ package inspectionhttp
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -166,19 +167,25 @@ func (h *Handler) getForm(c *gin.Context) {
 
 func (h *Handler) listForms(c *gin.Context) {
 	page, size := pageParams(c)
-	keyword := strings.TrimSpace(c.Query("keyword"))
 	state := strings.TrimSpace(c.Query("state"))
 	if state == "" {
 		state = "ACTIVE"
 	}
 	forms, total, err := h.svc.Store().ListForms(c.Request.Context(), inspection.FormFilter{
-		Keyword:     keyword,
+		Keyword:     strings.TrimSpace(c.Query("keyword")),
 		State:       state,
 		NeedsReview: c.Query("needs_review") == "true",
 		From:        c.Query("from"),
 		To:          c.Query("to"),
-		Offset:      (page - 1) * size,
-		Limit:       size,
+		// 样品维度与单位筛选（与 FormFilter 字段对齐，避免"传了没生效"）
+		Project: c.Query("sample_project"),
+		Model:   c.Query("sample_model"),
+		Spec:    c.Query("sample_spec"),
+		Size:    c.Query("sample_size"),
+		Side:    c.Query("sample_side"),
+		Unit:    c.Query("unit"),
+		Offset:  (page - 1) * size,
+		Limit:   size,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
@@ -206,7 +213,7 @@ func (h *Handler) saveRecord(c *gin.Context) {
 
 	res, err := h.doSave(c, req, "")
 	if err != nil {
-		httpx.Fail(c, err)
+		httpx.Fail(c, mapConstraintError(err, formNo))
 		return
 	}
 	httpx.OK(c, res)
@@ -242,7 +249,7 @@ func (h *Handler) saveRecordPatch(c *gin.Context) {
 
 	res, err := h.doSave(c, req, recordID)
 	if err != nil {
-		httpx.Fail(c, err)
+		httpx.Fail(c, mapConstraintError(err, req.FormNo))
 		return
 	}
 	httpx.OK(c, res)
@@ -460,6 +467,35 @@ func (h *Handler) listAudit(c *gin.Context) {
 }
 
 // ------------------------------- 工具 -------------------------------
+
+// mapConstraintError 把数据库唯一约束冲突映射为 409（V-7），
+// 而不是让它以 500 内部错误返回——前端需要能区分"重号"与"服务异常"。
+func mapConstraintError(err error, formNo string) error {
+	if err == nil {
+		return nil
+	}
+	var he *httpx.Error
+	if errors.As(err, &he) {
+		return err // 已经是业务错误（参数/校验/冲突等），原样返回
+	}
+	msg := strings.ToLower(err.Error())
+	hit := strings.Contains(msg, "unique") ||
+		strings.Contains(msg, "constraint failed") ||
+		strings.Contains(msg, "duplicate key")
+	if !hit {
+		return err
+	}
+	switch {
+	case strings.Contains(msg, "form_no"):
+		return httpx.Conflict("表单号已存在: "+formNo+"（V-7：表单号唯一）")
+	case strings.Contains(msg, "sequence_no"):
+		return httpx.Conflict("该表单下已存在相同序号的工序记录（V-7：(form_no, sequence_no) 唯一）")
+	case strings.Contains(msg, "record_lines") || strings.Contains(msg, "seq"):
+		return httpx.Conflict("明细行序号重复（V-7：(record_id, seq) 唯一）")
+	default:
+		return httpx.Conflict("唯一性冲突（V-7）", map[string]any{"detail": err.Error()})
+	}
+}
 
 // decodeLines 解析明细数组；字段缺省时按 0 处理（最大灵活性：缺字段不算错）。
 func decodeLines(raw json.RawMessage) ([]inspection.RecordLine, error) {
