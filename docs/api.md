@@ -53,8 +53,9 @@
 ```json
 // 成功
 { "code": "ok", "message": "", "data": { } }
-// 失败（details 仅在存在时出现）
-{ "code": "not_found", "message": "表单不存在: QS-0001", "details": [] }
+// 失败（details 仅在存在时出现；not_found/forbidden/unauthorized 无 details）
+{ "code": "not_found", "message": "表单不存在: QS-0001" }
+{ "code": "bad_request", "message": "存在无法识别的表单字段", "details": ["sample_project2"] }
 ```
 
 * 成功统一 HTTP `200`；`POST /api/forms` 与 `POST /api/users` 返回 **`201`**（`code` 仍为 `ok`）。
