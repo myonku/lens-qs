@@ -12,7 +12,7 @@
 
 > **v0.3 设计层面主要变更**
 > 1. **数据模型重构**：由「一份表单 = 一条记录」改为「**一份表单（Form）+ 多笔工序记录（Record）+ 每笔多行明细（Line）**」三层结构（§4.2.3）。
-> 2. **保存语义**：由"整体覆盖"改为"**字段级合并更新**"（`PATCH` 语义），同时支持 `mode: incremental | full` 两种校验强度（§5.6）。
+> 2. **保存语义**：由"整体覆盖"改为"**字段级合并更新**"（`PATCH` 语义），并以 `enforce: warn | strict` 控制校验强度（§5.6）。
 > 3. **表单既有栏目全部恢复**：单位 / 送检人 / 送检时间 / 检验人 / 检验时间 / 操机员 / 交接员；并区分"表单上写的"与"实际录入系统的人"（`recorded_by`）。
 > 4. **删除 RBAC**：去掉 `Role` / `Permission` / `RolePermission` / `UserRole` 表，改为 `User.isAdmin` 布尔标记 + 可替换的授权判定层（§5.5）。
 > 5. **新增完成度**：`isComplete` / `missingFields` 与"未完成表单清单"（§5.7）。
@@ -44,19 +44,25 @@
 
 ### 1.3 关键技术决定（摘要）
 
+> **v0.4 更新**：后端已按本节实现，代码在平级目录 `lens-qs-api/`（Go + Gin）。
+> 与原计划（NestJS + Prisma）的差异见 §3 与 §4.4 的说明。
+
 | 编号 | 决定 | 理由 |
 |---|---|---|
-| D-1 | 后端 NestJS + Fastify（Node 20 / TypeScript），单体模块化 | 装饰器式拦截器便于统一留痕；单体足以支撑规模；前后端同语言便于共享校验逻辑 |
-| D-2 | ORM 用 Prisma，数据库 PostgreSQL 16（开发期可用 SQLite） | 迁移可控；模型与 §4 表结构一一对应 |
-| D-3 | 认证用**服务端会话 + HttpOnly Cookie**，同时提供 Bearer Token 方式 | 便于浏览器与移动端/第三方对接两种场景 |
-| D-4 | **不做 RBAC**：`User.isAdmin` 标记 + `AuthorizationService`（当前恒允许） | 需求 B-14；把判定集中一处，将来补权限不改业务代码 |
-| D-5 | 计数字段用**固定列**（15 个不良子项 + 3 个合计列），类别字典化仅用于展示与统计映射 | 表结构稳定、校验与统计最简单 |
-| D-6 | 样品信息结构化字段**冗余存储在表单主表**上 | 查询性能与实现复杂度最优；字段少且固定 |
-| D-7 | 样品信息解析走**字典驱动的 token 集合匹配 + 解析缓存**；**原始串为事实来源** | 不依赖字符串位置；可迭代；不阻断保存（需求 B-6/B-8） |
-| D-8 | **三层模型**：`Form`（表单）→ `Record`（笔，= 一次工序填写）→ `Line`（行，= 一组计数） | 满足"多工序分次填写"且保留每笔独立的人员/时间/历史（需求 §5.1） |
-| D-9 | **保存 = 字段级合并（PATCH 语义）**，`mode` 控制校验强度；明细提交即整笔替换 | 兼容"不同人只填自己那部分"，同时让集中录入走同一接口（需求 §5.2） |
-| D-10 | 每次保存前把**该笔保存前内容**写入 `RecordHistory`（只增不可改） | 满足质量记录可追溯；粒度到"笔"比"整表"更贴合现场 |
-| D-11 | 汇总与良率**服务端重算**，忽略客户端上报值 | 数据一致性 |
+| D-1 | 后端 **Go 1.24 + Gin**，单体模块化 | 单二进制部署、无运行时依赖；框架通用度高、便于快速审查（业务方明确倾向 gin） |
+| D-2 | 数据访问用 `database/sql` + **`sqlx`**，SQL 显式书写 | 薄封装、SQL 可读可审；两套占位符由 `Rebind` 统一 |
+| D-3 | 数据库 **SQLite（开发/单机）或 PostgreSQL（生产）**，自带 SQL 迁移执行器 | 开发期零依赖起步；生产可平滑切换。表结构见 `lens-qs-api/migrations/{sqlite,postgres}/` |
+| D-4 | 认证用**服务端会话**：HttpOnly Cookie + Bearer Token 两种取令牌方式 | 浏览器与第三方调用方都能用；令牌只存 SHA-256 哈希，可服务端吊销 |
+| D-5 | 密码用 **Argon2id**（`golang.org/x/crypto`），PHC 格式自描述 | 与需求 U-1 一致；将来调参不影响旧密码校验 |
+| D-6 | 权限只有**两级**（普通用户 / 管理员），判定集中在 `middleware` + 可替换的判定层 | 需求 B-14；将来收紧只改一处 |
+| D-7 | 计数字段用**固定列**（15 个不良子项 + 3 个合计列），类别字典化仅用于展示与统计映射 | 表结构稳定、校验与统计最简单 |
+| D-8 | 样品信息结构化字段**冗余存储在表单主表**上 | 查询性能与实现复杂度最优；字段少且固定 |
+| D-9 | 样品信息解析走**字典驱动的 token 集合匹配 + 解析缓存**；**原始串为事实来源** | 不依赖字符串位置；可迭代；不阻断保存（需求 B-6/B-8） |
+| D-10 | **三层模型**：`Form` → `FormRecord`（笔）→ `RecordLine`（行）+ `RecordHistory` | 满足"多工序分次填写"且保留每笔独立的人员/时间/历史（需求 §5.1） |
+| D-11 | **保存 = 字段级合并（PATCH 语义）**，`enforce` 控制校验强度；明细提交即整笔替换 | 兼容"不同人只填自己那部分"，同时让集中录入走同一接口（需求 §5.2） |
+| D-12 | 每次保存前把**该笔保存前内容**写入 `RecordHistory`（只增不可改） | 质量记录可追溯；粒度到"笔"比"整表"更贴合现场 |
+| D-13 | 汇总与良率**服务端重算**，忽略客户端上报值 | 数据一致性 |
+| D-14 | 汇总统计做成**通用 `group_by`**（维度白名单 + 表达式映射） | 需求 §4.7：将来加维度不改接口 |
 
 ---
 
@@ -78,74 +84,79 @@
 └────────────────────────────┼─────────────────────────────────────────┘
                              │
 ┌────────────────────────────▼─────────────────────────────────────────┐
-│  API 服务（NestJS，单体模块化）                                        │
-│  ├─ AuthModule        登录/会话/密码策略/锁定                          │
-│  ├─ UserModule        用户、启停、重置密码（isAdmin）                   │
-│  ├─ DictModule        字典（工序/单位/样品段/参考部件号/不良类别）        │
-│  ├─ SampleModule      样品信息解析器 + 解析缓存 + 参考部件号匹配          │
-│  ├─ FormModule        表单管理（样品信息、单位、笔的列表）                │
-│  ├─ RecordModule      **核心**：笔的保存（字段级合并）、明细、完成度      │
-│  ├─ HistoryModule     保存快照与字段级差异                             │
-│  ├─ StatsModule       良率与不良分布统计、导出                          │
-│  └─ AuditModule       操作日志（拦截器统一写入）                        │
-│     共享层：ValidationService（V-1..V-10）、AuthorizationService、     │
-│            MergeService（字段级合并）、FormNoService（表单号序列）、     │
-│            PrismaService                                            │
+│  API 服务（Go + Gin，单体模块化）—— 实现见 lens-qs-api/                 │
+│  internal/auth        登录 / 会话 / 密码策略 / 锁定                    │
+│  internal/users       用户、启停、重置密码、管理员标记                  │
+│  internal/dictionary  字典（工序/单位/样品段/参考部件号/不良列定义）      │
+│  internal/sample      样品信息解析器 + 解析缓存 + 参考部件号匹配          │
+│  internal/inspection  **核心**：表单 / 笔 / 明细、字段级合并保存、        │
+│                       历史快照与差异、校验 V-1..V-10、完成度             │
+│  internal/stats       汇总统计（通用 group_by）、不良分布、工作量         │
+│  internal/middleware  认证、管理员校验、CORS、请求 ID                   │
+│  internal/store       SQL 迁移执行器、统一时间格式                      │
+│  internal/pkg         config / database / httpx / id / password        │
 └────────────────────────────┬─────────────────────────────────────────┘
-                             │ Prisma
+                             │ database/sql + sqlx
 ┌────────────────────────────▼─────────────────────────────────────────┐
-│  PostgreSQL 16（单实例；每日 pg_dump 备份 + WAL 归档）                  │
+│  SQLite（开发 / 单机）或 PostgreSQL 16（生产）                          │
 │  表：users / sessions / audit_logs                                    │
 │      forms（form_no 唯一）                                            │
 │      form_records（(form_id, sequence_no) 唯一）                       │
 │      record_lines / record_history（保存快照，追加写）                  │
 │      sample_parse_cache / sample_drawings / dict_items / units        │
+│      schema_migrations（迁移版本）                                     │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.1 部署形态
 | 形态 | 适用 | 说明 |
 |---|---|---|
-| A. 单机内网（推荐起步） | 小规模试运行 | 一台服务器跑 Docker Compose：`db` + `api` + `web/nginx`；HTTPS 用自签或内网 CA |
-| B. 开发/演示 | 本地 | SQLite + 单进程 API，`pnpm dev` 一条命令起 |
+| A. 单机内网（推荐起步） | 小规模试运行 | 一台服务器跑 Docker Compose：`db` + `api`；HTTPS 用自签或内网 CA |
+| B. 开发/演示 | 本地 | SQLite + 单进程 API：`./bin/lens-qs-api` 或 `make run` |
 | C. 后续扩展 | 增长后 | API 无状态可多实例；DB 主从；对象存储接图片 |
 
 ---
 
-## 3. 代码仓库结构（后端 monorepo）
+## 3. 代码仓库结构
+
+**文档与代码分两个平级目录**（同一台机器 / 同一工作区下）：
 
 ```
-lens-qs/
-├─ docs/
-│  ├─ requirements.md          需求文档
-│  └─ design.md                本文档
-│  （字段与字典清单见本文档 §4）
-├─ apps/
-│  └─ api/                     后端（NestJS）—— 本期唯一交付物
-│     ├─ prisma/
-│     │  ├─ schema.prisma
-│     │  ├─ migrations/
-│     │  └─ seed.ts            初始管理员 + 字典 + 参考部件号种子数据
-│     └─ src/
-│        ├─ modules/{auth,user,dict,sample,form,record,history,stats,audit}/
-│        ├─ common/{guards,interceptors,filters,decorators,pipes}/
-│        └─ main.ts
-├─ packages/
-│  └─ shared/                  校验与解析的单一实现（后端引用；如将来有前端可直接复用）
-│     └─ src/{types.ts, enums.ts, validate.ts, parse-sample.ts, defect-columns.ts, merge.ts}
-├─ test/                       单元/接口/E2E 测试
-├─ deploy/
-│  ├─ docker-compose.yml
-│  ├─ nginx.conf
-│  └─ backup.sh
-├─ scripts/
-├─ .gitignore
-├─ package.json                pnpm workspaces
-└─ README.md
+D:\Pr\
+├─ lens-qs/                  文档仓库（本文件所在）
+│  ├─ docs/requirements.md   需求文档
+│  ├─ docs/design.md         本文档
+│  ├─ README.md
+│  └─ .gitignore / .gitattributes
+│
+└─ lens-qs-api/              后端工程（Go + Gin）—— 本期交付物，独立 git 仓库
+   ├─ cmd/
+   │  ├─ api/                启动 HTTP 服务（含优雅退出）
+   │  ├─ migrate/            执行 / 查看迁移
+   │  ├─ seed/               初始化字典 + 参考部件号
+   │  └─ createuser/         创建 / 更新用户（含管理员）
+   ├─ internal/
+   │  ├─ auth/               登录、会话、改密（+ http/ 子包）
+   │  ├─ users/              用户（两级）
+   │  ├─ dictionary/         字典、单位、参考部件号（+ http/）
+   │  ├─ sample/             样品信息解析、缓存、参考匹配（+ http/）
+   │  ├─ inspection/         **核心**：表单/笔/行、合并保存、历史、校验、差异（+ http/）
+   │  ├─ stats/              汇总统计（+ http/）
+   │  ├─ middleware/         认证、管理员校验、CORS、请求 ID
+   │  ├─ server/             路由装配
+   │  ├─ store/              迁移执行器、统一时间格式、测试库
+   │  └─ pkg/                config / database / httpx / id / password
+   ├─ migrations/            sqlite/ 与 postgres/ 两套 .sql（go:embed 进二进制）
+   ├─ data/                  参考部件号清单 CSV（seed 使用）
+   ├─ scripts/               端到端验证脚本（PowerShell）
+   ├─ Dockerfile / docker-compose.yml / Makefile
+   ├─ .env.example
+   └─ README.md
 ```
 
-> `packages/shared` 是设计要点：**校验规则、样品解析器、字段级合并逻辑只写一份**，便于将来对接方复用同一套判定，避免两套逻辑漂移。
-> 前端目录（`apps/web`）在 v0.3 中**移除**——本期不交付前端（需求 B-15）。
+> **为什么分两个目录**：需求方要求"不要把 lens-qs 作为后端顶级目录"，且后端工程自带 git 信息需要独立（见 `lens-qs-api` 自己的 `.gitignore`）。两仓库各自独立提交，文档里以相对路径互相引用。
+> **校验规则、样品解析器、字段级合并逻辑**都在 `internal/inspection` 与 `internal/sample` 中**只实现一份**（Go 侧），接口返回的校验结果即这一份的实现结果。
+> 前端不在本期范围（需求 B-15），故没有 `apps/web`。
 
 ---
 
@@ -179,7 +190,15 @@ dict_items（工序 / 单位 / 样品段 / 不良类别文案）
 > 与 v0.2 的差异：删除 `roles` / `permissions` / `role_permissions` / `user_roles`（需求 B-14 权限放开）；
 > `inspection_docs` 拆分为 `forms` + `form_records`；`doc_history` 改为按笔的 `record_history`。
 
-### 4.2 表定义（Prisma 风格伪 DDL）
+### 4.2 表定义
+
+> **实现说明**：以下用 Prisma 风格伪 DDL 表达**便于阅读的表结构**（字段、类型、约束、索引）。
+> 实际建表脚本是手写 SQL，位于 `lens-qs-api/migrations/{sqlite,postgres}/*.sql`（两套方言），
+> 由 `lens-qs-api/internal/store/migrate.go` 的迁移执行器按版本号顺序应用。
+> Go 结构体定义在 `lens-qs-api/internal/inspection/models.go`、`internal/users/store.go` 等文件中，`db` 标签与列名一一对应。
+>
+> **时间字段的存储约定**：所有时间列都用 `TEXT` 存 **UTC RFC3339**（秒精度）。这样 SQLite 与 PostgreSQL 行为一致，
+> 且可直接按字符串比较/排序。需要按时间范围过滤时用字符串区间即可（见 `inspection/list.go`、`stats/service.go`）。
 
 #### 4.2.1 用户与权限
 
@@ -525,7 +544,7 @@ model AuditLog {
 | 数据形态一致 | 都落到同一套 `forms` / `form_records` / `record_lines` |
 | 历史一致 | 两种模式每次保存都写 `RecordHistory` |
 | 汇总一致 | 都走服务端重算 |
-| 差异只在 | 校验强度（`mode`）与调用节奏，**不影响最终数据结构** |
+| 差异只在 | 校验强度（`enforce`）与调用节奏，**不影响最终数据结构** |
 
 ---
 
@@ -551,7 +570,7 @@ model AuditLog {
   - 提供后台"待核对清单"供管理员补录字典或确认，属**可选治理动作**，不影响主流程。
 - 待核对清单查询：`needsReview = true AND state = 'ACTIVE'`。
 
-### 5.2 样品信息解析器（`packages/shared/parse-sample.ts`）
+### 5.2 样品信息解析器（`lens-qs-api/internal/sample/parse.go`）
 
 **设计原则**：位置无关的 token 集合匹配；**解析是"尽力而为"的辅助能力，不是录入的前置条件**。
 
@@ -591,7 +610,7 @@ model AuditLog {
 ### 5.3 校验（单一实现，可被复用）
 
 ```ts
-// packages/shared/validate.ts   规则编号与需求文档 §4.1.3 一一对应
+// lens-qs-api/internal/inspection/validate.go   规则编号与需求文档 §4.1.3 一一对应
 validateLine(line, mode): Issue[]              // V-1..V-5（行级）
 validateRecord(record, lines, mode): Issue[]   // V-4, V-6, V-10 + 汇总一致性
 validateForm(form): Issue[]                    // V-7, V-8, V-9（表单级）
@@ -660,7 +679,7 @@ missingFields(record, lines): string[]         // V-10 缺失项（驱动 isComp
 | 标识 | `formNo` 标识表单；`(formId, sequenceNo)` 标识一笔 |
 | 保存入口 | 一个接口承担全部写入：`POST /api/forms/:formNo/records`（新建一笔）与 `PATCH /api/records/:id`（更新一笔）。两者都走同一套合并逻辑 |
 | 合并语义 | **字段级合并**：请求里出现的字段才更新；未出现的保持原值。明细（`lines`）若出现，则**整笔替换**该笔明细（不做行级合并） |
-| 模式 | `mode: incremental`（默认，弱校验）\| `full`（强校验）。见 §5.3 |
+| 校验强度 | `enforce: warn`（默认，只提示不阻断）\| `strict`（把自相矛盾的数据拦下来）。见 §5.3 |
 | 历史 | 更新前把**该笔保存前内容 + 所属表单的当前快照**写入 `RecordHistory`，追加写、不可改不可删 |
 | 不可变 | `form.createdBy/createdAt`、`record.recordedBy/recordedAt`、`id`、`sequenceNo` |
 | 递增 | `record.saveCount += 1` |
@@ -719,7 +738,7 @@ saveRecord(input, actor, mode):
 
 **历史与差异**
 - 查询历史：`GET /api/records/:id/history` → 按 `saveCount` 倒序返回每一版。
-- 差异：`packages/shared` 提供 `diffRecord(v1, v2)`，返回**字段级 + 明细级**变更清单（旧值/新值）。
+- 差异：`lens-qs-api/internal/inspection/diff.go` 提供 `DiffRecords(v1, v2)`，返回**字段级 + 明细级**变更清单（旧值/新值）。
 - `RecordHistory` 里同时存了当时所属表单的快照，因此也能回答"这次保存是否顺手改了样品信息"。
 
 ### 5.7 操作日志与完整性
@@ -883,7 +902,7 @@ saveRecord(input, actor, mode):
 | **唯一硬边界** | 业务接口一律要求登录；**不做业务权限校验**（B-14），但身份必须可信 |
 | 身份来源 | 操作人一律取自会话/Bearer token，**不接受请求体中的操作人字段** |
 | 管理员边界 | 仅用户管理接口校验 `isAdmin`；该标记不可由用户自助修改 |
-| 输入 | DTO 白名单校验（class-validator）+ Prisma 参数化查询（无拼接 SQL） |
+| 输入 | 请求体字段白名单（只认识结构体上声明过的列名）+ `sqlx` 参数化查询（无拼接 SQL）；未知字段直接报 400，便于调用方发现拼写错误 |
 | 限流 | 登录接口按 IP + 账号限流；导出接口按用户限流 |
 | 传输 | 强制 HTTPS（反代跳转）；内网自签证书需导入信任 |
 | 日志不可篡改 | `audit_logs`、`record_history` 的应用账号无 UPDATE/DELETE 权限 |
@@ -896,8 +915,8 @@ saveRecord(input, actor, mode):
 
 | 层级 | 范围 | 要点 |
 |---|---|---|
-| 单元测试 | `packages/shared`：校验 V-1..V-10（**按 mode 分级**）、样品解析器（含 `M2 S2 ND2 SMR`、`S1 - MD - R - VID2 - MONOC & BINOC`、无法识别的 `ND2`）、良率计算、`diffRecord`、`missingFields` | 覆盖率 ≥ 90%（核心逻辑） |
-| 服务测试 | **合并保存语义**：① 同一笔分 3 次提交不同字段 → 最终内容正确、`saveCount=3`、历史 2 条；② 明细提交 → 整笔替换；③ 未提交字段不被清空；④ 乐观锁 409；⑤ 幂等键去重；⑥ 两种 `mode` 的校验分级差异 | 每次保存必须产生 1 条 `RecordHistory` + 1 条 `AuditLog` |
+| 单元测试 | `internal/inspection`、`internal/sample`：校验 V-1..V-10（**按 enforce 分级**）、样品解析器（含 `M2 S2 ND2 SMR`、`S1 - MD - R - VID2 - MONOC & BINOC`、无法识别的 `ND2`）、良率计算、`diffRecord`、`missingFields` | 覆盖率 ≥ 90%（核心逻辑） |
+| 服务测试 | **合并保存语义**：① 同一笔分 3 次提交不同字段 → 最终内容正确、`saveCount=3`、历史 2 条；② 明细提交 → 整笔替换；③ 未提交字段不被清空；④ 乐观锁 409；⑤ 幂等键去重；⑥ 两种 `enforce` 的校验分级差异 | 每次保存必须产生 1 条 `RecordHistory` + 1 条 `AuditLog` |
 | 接口测试 | 所有接口**未登录必须 401**；用户管理接口非 `isAdmin` 必须 403；其余接口任何登录用户均可访问（验证 B-14 放开语义） | 401/403 语义正确 |
 | E2E（接口级） | 创建表单 → 分次提交 3 笔（含只填一部分）→ 查询表单得到完整视图 → 更新同一笔 → 查看历史与差异 → 作废 → 导出 | 覆盖需求 §8 的两个场景 |
 | 性能 | 1000/10000 笔数据下的列表、统计、含多版历史的详情 | 对照 §7 目标 |
@@ -909,8 +928,8 @@ saveRecord(input, actor, mode):
 
 | 阶段 | 交付 | 关键设计落地 |
 |---|---|---|
-| M1 骨架 | monorepo、Prisma schema（三层模型）、登录与会话、用户管理、字典管理 | §4.2.1、§4.2.2、§5.5 |
-| M2 核心保存 | 表单/笔/行的创建与**字段级合并保存**、两种 `mode` 的校验、`RecordHistory`、完成度 | §4.2.3、§4.3、§5.3、§5.6 |
+| M1 骨架 ✅ | Go 工程、SQL 迁移（三层模型）、登录与会话、用户管理（两级）、字典管理 | §4.2.1、§4.2.2、§5.5 |
+| M2 核心保存 ✅ | 表单/笔/行的创建与**字段级合并保存**、`enforce` 分级校验、`RecordHistory`、完成度 | §4.2.3、§4.3、§5.3、§5.6 |
 | M3 样品信息 | 解析器 + 缓存 + 参考部件号匹配 + 待核对清单 + 层级检索 | §5.1、§5.2 |
 | M4 查询与导出 | 列表/详情/历史差异、导出与导入模板、操作日志 | §6.4、§6.5 |
 | M5 统计与上线 | 统计、备份与部署脚本、性能优化、验收测试 | §7、§8、§9 |
@@ -921,7 +940,7 @@ saveRecord(input, actor, mode):
 
 | 风险 | 影响 | 对策 |
 |---|---|---|
-| **使用环节未知（Q20）** | 若按"集中录入"假设简化校验，现场分次填就用不了；反之过度灵活会导致数据零碎 | **两种模式都实现**（`mode` 参数）；校验强度可切换；完成度用 `isComplete` 显式表达 |
+| **使用环节未知（Q20）** | 若按"集中录入"假设简化校验，现场分次填就用不了；反之过度灵活会导致数据零碎 | **两种节奏都实现**（字段级合并 + `enforce` 参数）；校验强度可切换；完成度用 `isComplete` 显式表达 |
 | **多工序落库形态未定（Q19）** | 工序字段归属（笔 vs 行）可能返工 | 笔与行**都保留** `processCode`，两种现实都能表达；确认后收敛（改动仅涉及查询与展示，不动核心保存逻辑） |
 | 表单上的"检验人"与实际录入人混淆（Q18） | 追溯失真 | 拆成两组字段：`inspectedBy`（表单事实）与 `recordedBy`（系统留痕） |
 | 权限放开（B-14）后误改他人数据 | 数据被改坏 | 每次保存留痕（`RecordHistory` + `AuditLog`）+ 逻辑作废不删数据；`AuthorizationService` 预留，将来可收紧 |
@@ -944,13 +963,13 @@ saveRecord(input, actor, mode):
 | B-6 原始输入为准 | `Form.sampleRaw` 为事实来源；解析与人工修正均不改写；V-8 恒为 warning（§5.1、§5.2） |
 | B-7 项目 M1/M2 必须纳入 | `Form.sampleProject` + 字典 `sample_project`（V-9 提示缺失） |
 | B-8 冗余字段可有可无 | `sampleClass` / `sampleIsRx` / `sampleDrawingId` 可空、不校验、不作验收（§5.1） |
-| **B-9 分次录入 / 两种场景** | **三层模型**（Form/Record/Line）+ **字段级合并保存** + `mode: incremental\|full`（§4.2.3、§5.2、§5.6） |
+| **B-9 分次录入 / 两种场景** | **三层模型**（Form/Record/Line）+ **字段级合并保存** + `enforce: warn\|strict`（§4.2.3、§5.2、§5.6） |
 | B-10 无审核流程 | 无审批状态机、无 `/review`、无 `DocReview` 表（§5.6） |
 | **B-11 表单既有栏目全部纳入** | `FormRecord.submittedBy/submittedAt/inspectedBy/inspectedAt/machineOperator/handoverBy` + `Form.unitId`；缺失走 V-10 提示 |
 | B-12 不良重复计数 | V-2 恒为 warning；统计接口标注（§5.3） |
 | **B-13 率值行不处理** | **不建字段**（无 `manualRateNote`），不参与任何计算 |
 | **B-14 权限放开** | 删除 `Role/Permission/UserRole` 表与权限点；仅 `isAdmin` 保护用户管理；`AuthorizationService` 可替换（§5.5） |
-| **B-15 仅后端** | 仓库无 `apps/web`；文档中的"场景"仅用于说明接口能力（§3、§5.9） |
+| **B-15 仅后端** | 代码仓库 `lens-qs-api` 只含后端；文档中的"场景"仅用于说明接口能力（§3、§5.9） |
 | U-8/U-12 留痕 | `AuditLog` 拦截器 + `RecordHistory`（§5.6、§5.7） |
 | Q-1 层级检索 | 复合索引（§4.2.3、§7） |
 | Q-18 表单人与录入人区分 | `inspectedBy` vs `recordedBy`（§4.2.3） |
@@ -963,3 +982,4 @@ saveRecord(input, actor, mode):
 | v0.1 | 初始 | 依据需求文档 v0.1 编写初步设计 | — |
 | v0.2 | 第二轮确认后 | ① 删除审批状态机与 `DocReview`，改为 UPSERT 覆盖 + `DocHistory` 快照（§4.2.3、§4.3、§5.6）；② `formNo` 升为记录唯一键，新增并发乐观锁与 409 约定；③ 样品信息改为"原始输入优先"，冗余字段不校验、不作验收（§5.1、§5.2）；④ 表头删除送检人/操机员/交接员；⑤ 校验 V-2 降级为 warning、新增 V-9、明确只有 V-1/V-3/V-4/V-6/V-7 具阻断力；⑥ 权限点与 API 随之调整（删除 submit/review/revise，新增 history/diff）；⑦ 前端路由删除 `/review`，新增历史差异视图；⑧ 里程碑、测试策略、风险表更新 | — |
 | **v0.3** | 第三轮确认后 | ① **数据模型改为三层**：`Form` / `FormRecord` / `RecordLine` + `RecordHistory`（§4.1、§4.2.3）；② **保存语义改为字段级合并**，`mode: incremental \| full` 控制校验强度（§5.6）；③ **恢复表单既有栏目**并新增 `recordedBy` 区分"表单上的人"与"录入人"（§4.2.3、Q18）；④ **删除 RBAC 四张表**，改为 `User.isAdmin` + 可替换的 `AuthorizationService`（§4.2.1、§5.5）；⑤ **新增完成度** `isComplete` / `missingFields` / 未完成表单清单（§5.7、§6.4）；⑥ API 全面调整（`/forms`、`/records`、history/diff、defect-columns），删除 roles 接口；⑦ **删除前端目录与页面章节**，改为"接口使用场景"（§3、§5.9）；⑧ 校验新增 V-10、V-6 降级为 warning、按 mode 分级（§5.3）；⑨ 性能、安全、测试、里程碑、风险表全部更新 | — |
+| **v0.5** | 骨架落地后（实现回写） | ① **技术栈落定并已实现**：Go 1.24 + Gin + sqlx，SQLite / PostgreSQL 双驱动（§1.3、§2）；② 表定义改为**手写 SQL 迁移**（`lens-qs-api/migrations/{sqlite,postgres}/`），§4.2 的 Prisma 风格 DDL 仅作可读表结构说明；③ 时间列统一 **TEXT + UTC RFC3339**，双库行为一致（§4.2）；④ 校验参数由 `mode: incremental\|full` 改为 **`enforce: warn\|strict`**（与需求 v0.4 对齐），并明确 V-2/V-6/V-8/V-9/V-10 **任何模式都不阻断**；⑤ 仓库结构改为**文档仓库 `lens-qs` + 后端仓库 `lens-qs-api` 平级独立**（§3）；⑥ 权限收敛为**两级**（普通用户 / 管理员，§5.5）；⑦ **汇总统计的通用 `group_by` 已实现**（需求 §4.7 的基础能力已具备）；⑧ 测试策略按实际落地的用例清单更新 | — |
