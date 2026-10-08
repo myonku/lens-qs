@@ -42,7 +42,13 @@ type Config struct {
 }
 
 // Load 读取环境变量并返回配置。缺失项使用默认值。
+//
+// 会先尝试加载当前目录下的 .env（含上层的 backend/.env），
+// 因此本地开发只需把 .env.example 复制成 .env 即可，无需手工设环境变量。
+// **已存在的真实环境变量优先级更高，不会被 .env 覆盖**。
 func Load() (*Config, error) {
+	LoadDotEnv(".env", "backend/.env")
+
 	c := &Config{
 		Env:      env("APP_ENV", "dev"),
 		Addr:     env("APP_ADDR", ":8080"),

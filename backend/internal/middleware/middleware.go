@@ -139,7 +139,13 @@ func CORS(origins []string) gin.HandlerFunc {
 			h.Set("Vary", "Origin")
 			h.Set("Access-Control-Allow-Credentials", "true")
 			h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
-			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Auth-Token, X-Request-Id")
+			// 必须覆盖前端实际会发的自定义头，否则预检失败：
+			// Authorization / X-Auth-Token（认证）、X-Request-Id（追踪）、
+			// X-Idempotency-Key 与 Idempotency-Key（幂等写入）。
+			h.Set("Access-Control-Allow-Headers",
+				"Authorization, Content-Type, X-Auth-Token, X-Request-Id, "+
+					"X-Idempotency-Key, Idempotency-Key")
+			h.Set("Access-Control-Expose-Headers", "X-Request-Id, X-Idempotent-Replay")
 			h.Set("Access-Control-Max-Age", "600")
 		}
 		if c.Request.Method == "OPTIONS" {

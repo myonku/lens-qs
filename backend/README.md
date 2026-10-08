@@ -7,26 +7,26 @@
 
 需求、设计与接口文档在**上级 `docs/` 目录**：
 
-| 文档 | 内容 |
-|---|---|
-| [`../docs/requirements.md`](../docs/requirements.md) | 需求（业务口径 B-x、校验 V-x、待确认问题 Q-x） |
-| [`../docs/design.md`](../docs/design.md) | 系统设计（数据模型、保存语义、架构） |
-| [`../docs/features.md`](../docs/features.md) | 功能说明（简版）：功能清单与实现状态、设计原则 |
-| [`../docs/api.md`](../docs/api.md) | **接口文档**（与前端对齐用，含逐接口请求/响应示例） |
+| 文档                                                  | 内容                                                      |
+| ----------------------------------------------------- | --------------------------------------------------------- |
+| [`../docs/requirements.md`](../docs/requirements.md) | 需求（业务口径 B-x、校验 V-x、待确认问题 Q-x）            |
+| [`../docs/design.md`](../docs/design.md)             | 系统设计（数据模型、保存语义、架构）                      |
+| [`../docs/features.md`](../docs/features.md)         | 功能说明（简版）：功能清单与实现状态、设计原则            |
+| [`../docs/api.md`](../docs/api.md)                   | **接口文档**（与前端对齐用，含逐接口请求/响应示例） |
 
 ---
 
 ## 技术选型
 
-| 项 | 选择 | 说明 |
-|---|---|---|
-| 语言 | Go 1.24+ | 单二进制部署，无运行时依赖 |
-| Web 框架 | **Gin** | 通用度高、易审查 |
-| 数据库 | **SQLite（默认）/ PostgreSQL** | 开发与单机部署用 SQLite（纯 Go 驱动，无需 CGO）；生产用 PostgreSQL |
-| 数据访问 | `database/sql` + `sqlx` | 薄封装，SQL 显式可读；两套占位符由 `Rebind` 统一 |
-| 迁移 | 自带 SQL 迁移执行器 | `migrations/{sqlite,postgres}/`，`go:embed` 进二进制 |
-| 密码 | Argon2id（`golang.org/x/crypto`） | PHC 格式自描述，便于将来调参 |
-| 会话 | 服务端会话（Cookie + Bearer Token） | 令牌只存 SHA-256 哈希，可服务端吊销 |
+| 项       | 选择                                 | 说明                                                               |
+| -------- | ------------------------------------ | ------------------------------------------------------------------ |
+| 语言     | Go 1.24+                             | 单二进制部署，无运行时依赖                                         |
+| Web 框架 | **Gin**                        | 通用度高、易审查                                                   |
+| 数据库   | **SQLite（默认）/ PostgreSQL** | 开发与单机部署用 SQLite（纯 Go 驱动，无需 CGO）；生产用 PostgreSQL |
+| 数据访问 | `database/sql` + `sqlx`          | 薄封装，SQL 显式可读；两套占位符由`Rebind` 统一                  |
+| 迁移     | 自带 SQL 迁移执行器                  | `migrations/{sqlite,postgres}/`，`go:embed` 进二进制           |
+| 密码     | Argon2id（`golang.org/x/crypto`）  | PHC 格式自描述，便于将来调参                                       |
+| 会话     | 服务端会话（Cookie + Bearer Token）  | 令牌只存 SHA-256 哈希，可服务端吊销                                |
 
 **依赖很少**：gin、sqlx、pgx（PostgreSQL 驱动）、modernc sqlite、x/crypto。
 
@@ -34,25 +34,54 @@
 
 ## 快速开始（SQLite）
 
+### 一键启动（推荐）
+
+```powershell
+cd backend
+pwsh -File scripts\dev.ps1            # 前台运行，Ctrl+C 停止，能看实时日志
+pwsh -File scripts\dev.ps1 -NoWait    # 后台运行（启动完就返回，日志写到 bin/api.log）
+pwsh -File scripts\dev.ps1 -Reset     # 删库重建，重新引导管理员
+```
+
+脚本依次做：构建 → 迁移 → 写字典与参考部件号 → 起服务 → 健康检查，并打印登录账号。
+它会自动读取 `backend/.env`（真实环境变量优先），所以不必手工 export。
+
+### 手工步骤
+
 ```bash
-# 1) 准备配置
-cp .env.example .env
-
-# 2) 编译
-make build            # 产物在 bin/
-
-# 3) 建库 + 初始化数据 + 建账号
+cp .env.example .env    # 至少确认 CORS_ORIGINS 与 BOOTSTRAP_ADMIN_*
+make build              # 产物在 bin/
 ./bin/lens-qs-migrate
 ./bin/lens-qs-seed
-./bin/lens-qs-createuser -username admin -password 'Admin@12345' -admin -name 管理员
-./bin/lens-qs-createuser -username zhangsai -password 'Test@12345' -name 张赛赛 -emp 1001
-
-# 4) 启动
-./bin/lens-qs-api     # 默认 :8080
+./bin/lens-qs-api       # 默认 :8080
 curl http://127.0.0.1:8080/healthz
 ```
 
 也可以直接用 `go run`：`make migrate && make seed && make run`。
+
+### 账号：没有内置默认账号
+
+**系统不预置任何账号**（没有硬编码的 admin/密码），账号必须由下面两种方式之一产生：
+
+| 方式 | 说明 |
+|---|---|
+| **首次启动自动引导**（推荐） | 在 `.env` 里设 `BOOTSTRAP_ADMIN_USER` / `BOOTSTRAP_ADMIN_PASS`，当**数据库里一个用户都没有**时自动创建该管理员。**只在库为空时生效**，已有用户时不会创建、也不会改密码 |
+| 手工创建 | `./bin/lens-qs-createuser -username admin -password 'Admin@12345' -admin -name 管理员`；加 `-update` 可给已存在用户改密码或改管理员标记 |
+
+本仓库的 `.env.example` / Docker 默认值为 `admin` / `Admin@12345`（可通过环境变量覆盖）；
+`backend/.env` 不进版本库。
+
+> 忘了密码：`./bin/lens-qs-createuser -username admin -password '新密码' -update`。
+
+### 前端本地联调的两个注意点
+
+1. **必须配置 `CORS_ORIGINS`**。留空时后端**不下发任何 CORS 头**，浏览器带 Cookie 的请求会被
+   同源策略拦掉（表现为前端报跨域错误、但 `curl` 一切正常）。本地开发可设 `CORS_ORIGINS=*`，
+   生产改成具体来源（如 `https://qs.example.com`）。
+2. **Cookie 会话需要 `credentials`**。登录会下发 `sid`（`HttpOnly; SameSite=Lax`），
+   前端请求要带凭据；用 `fetch` 时加 `credentials: 'include'`，用 axios 时加
+   `withCredentials: true`。也可以改用响应里的 `token` 走 `Authorization: Bearer`（免 Cookie，
+   但需自行保存）。注意 `SameSite=Lax` 意味着**跨站**前端拿不到这个 Cookie —— 此时请用 Bearer。
 
 ### Docker（PostgreSQL + API）
 
@@ -68,21 +97,21 @@ curl http://127.0.0.1:8080/healthz
 
 ## 配置（环境变量）
 
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `APP_ENV` | `dev` | `prod` 时关闭 gin 调试输出 |
-| `APP_ADDR` | `:8080` | 监听地址 |
-| `DB_DRIVER` | `sqlite` | `sqlite` \| `postgres` |
-| `DB_DSN` | `./data/lens.db` | sqlite 文件路径或 postgres 连接串 |
-| `AUTO_MIGRATE` | `false` | 启动时自动迁移 |
-| `SESSION_TTL` | `12h` | 会话绝对有效期 |
-| `SESSION_IDLE_TTL` | `2h` | 空闲超时 |
-| `MAX_LOGIN_FAIL` | `5` | 连续失败上限 |
-| `LOCK_DURATION` | `10m` | 达到上限后的锁定时长 |
-| `COOKIE_NAME` | `sid` | 会话 Cookie 名 |
-| `COOKIE_SECURE` | `false` | 前置 HTTPS 时置 `true` |
-| `CORS_ORIGINS` | 空 | 允许的来源，逗号分隔（留空则不下发 CORS 头） |
-| `BOOTSTRAP_ADMIN_USER/PASS` | 空 | 库为空时自动创建管理员 |
+| 变量                          | 默认               | 说明                                         |
+| ----------------------------- | ------------------ | -------------------------------------------- |
+| `APP_ENV`                   | `dev`            | `prod` 时关闭 gin 调试输出                 |
+| `APP_ADDR`                  | `:8080`          | 监听地址                                     |
+| `DB_DRIVER`                 | `sqlite`         | `sqlite` \| `postgres`                   |
+| `DB_DSN`                    | `./data/lens.db` | sqlite 文件路径或 postgres 连接串            |
+| `AUTO_MIGRATE`              | `false`          | 启动时自动迁移                               |
+| `SESSION_TTL`               | `12h`            | 会话绝对有效期                               |
+| `SESSION_IDLE_TTL`          | `2h`             | 空闲超时                                     |
+| `MAX_LOGIN_FAIL`            | `5`              | 连续失败上限                                 |
+| `LOCK_DURATION`             | `10m`            | 达到上限后的锁定时长                         |
+| `COOKIE_NAME`               | `sid`            | 会话 Cookie 名                               |
+| `COOKIE_SECURE`             | `false`          | 前置 HTTPS 时置`true`                      |
+| `CORS_ORIGINS`              | 空                 | 允许的来源，逗号分隔（留空则不下发 CORS 头） |
+| `BOOTSTRAP_ADMIN_USER/PASS` | 空                 | 库为空时自动创建管理员                       |
 
 ---
 
@@ -117,13 +146,13 @@ forms（表单提交，form_no 唯一）
 
 **表单列目录**是字段的唯一事实来源，位于 `internal/formfields/formfields.go`：
 
-| 分组 | 数量 |
-|---|---|
+| 分组                   | 数量                                                                                 |
+| ---------------------- | ------------------------------------------------------------------------------------ |
 | **纸质表头栏目** | **7 栏目（8 字段）**：单位、送检人、送检时间、检验人、检验时间、操机员、交接员 |
-| 计数区栏目 | 5（检验工序 / 检验总数 / 合格品 / 不合格品 / 合格率） |
-| 不良缺陷明细 | **35 列**（点伤、划伤、法兰边点伤、…、法兰边凹痕） |
-| 展开后的计数子列 | **105**（每列 × 凹面 `concave` / 凸面 `convex` / 双面 `both`） |
-| **合计可填列** | **117** |
+| 计数区栏目             | 5（检验工序 / 检验总数 / 合格品 / 不合格品 / 合格率）                                |
+| 不良缺陷明细           | **35 列**（点伤、划伤、法兰边点伤、…、法兰边凹痕）                            |
+| 展开后的计数子列       | **105**（每列 × 凹面 `concave` / 凸面 `convex` / 双面 `both`）          |
+| **合计可填列**   | **117**                                                                        |
 
 字段命名：`<缺陷编码>_<表面>`，例如 `prick_concave`、`flange_recess_both`。
 `form_lines` 的列清单与插入语句都由该目录生成，因此**新增一个缺陷列只需改目录 + 加一次迁移**。
@@ -138,14 +167,14 @@ forms（表单提交，form_no 唯一）
 
 **字段级合并**，且区分三态：
 
-| 情况 | 语义 |
-|---|---|
-| 键**不存在** | 不修改（保持原值） |
-| 键为 `null` | **清空**该字段（缺陷格子同样是清零该格子） |
-| 键有值 | 写入 |
-| `defects` 为 `{}` | 清空全部缺陷计数 |
-| `lines` 出现 | **整笔替换**明细（含 `[]` = 清空） |
-| 未知键 | **400**，并在 `details.hint` 提示 `GET /api/form-fields` |
+| 情况                  | 语义                                                               |
+| --------------------- | ------------------------------------------------------------------ |
+| 键**不存在**    | 不修改（保持原值）                                                 |
+| 键为`null`          | **清空**该字段（缺陷格子同样是清零该格子）                   |
+| 键有值                | 写入                                                               |
+| `defects` 为 `{}` | 清空全部缺陷计数                                                   |
+| `lines` 出现        | **整笔替换**明细（含 `[]` = 清空）                         |
+| 未知键                | **400**，并在 `details.hint` 提示 `GET /api/form-fields` |
 
 **表头与明细的优先级**：有明细时按明细行重算表头汇总，但**补丁里显式给出的表头栏目优先**
 （贴合纸质表单"表头是一行合计值"的填法）。合格率由 合格品/检验总数 计算（分母 0 → null）。
@@ -156,18 +185,18 @@ forms（表单提交，form_no 唯一）
 
 `enforce` 参数控制，**默认 `warn`**：
 
-| 规则 | 说明 | 默认 | `enforce=strict` |
-|---|---|---|---|
-| V-1 | 合格 + 不良 = 总数 | 警告 | ⛔ 阻断 |
-| V-2 | 缺陷子项合计 = 不合格品 | 警告 | 警告（**恒不阻断**，见需求 Q5） |
-| V-3 | 子项边界 | 警告 | ⛔ 阻断 |
-| V-4 | 非负整数 | 警告 | ⛔ 阻断 |
-| V-6 | 送检时间 ≤ 检验时间 ≤ 现在 | 警告 | 警告 |
-| V-7 | `form_no` 唯一 / `(form_id, seq)` 唯一 | ⛔ 阻断 | ⛔ 阻断 |
-| V-8 | 样品信息与参考清单不匹配 | 警告 + 待核对标记 | 警告（**不阻断**） |
-| V-11 | 未知字段名 | ⛔ 阻断（400） | ⛔ 阻断（400） |
-| V-9 | 结构化项（项目 M1/M2）缺失 | 警告 | 警告 |
-| V-10 | 表单既有栏目缺失 | 警告 + `missing_fields` | 警告 |
+| 规则 | 说明                                       | 默认                     | `enforce=strict`                    |
+| ---- | ------------------------------------------ | ------------------------ | ------------------------------------- |
+| V-1  | 合格 + 不良 = 总数                         | 警告                     | ⛔ 阻断                               |
+| V-2  | 缺陷子项合计 = 不合格品                    | 警告                     | 警告（**恒不阻断**，见需求 Q5） |
+| V-3  | 子项边界                                   | 警告                     | ⛔ 阻断                               |
+| V-4  | 非负整数                                   | 警告                     | ⛔ 阻断                               |
+| V-6  | 送检时间 ≤ 检验时间 ≤ 现在               | 警告                     | 警告                                  |
+| V-7  | `form_no` 唯一 / `(form_id, seq)` 唯一 | ⛔ 阻断                  | ⛔ 阻断                               |
+| V-8  | 样品信息与参考清单不匹配                   | 警告 + 待核对标记        | 警告（**不阻断**）              |
+| V-11 | 未知字段名                                 | ⛔ 阻断（400）           | ⛔ 阻断（400）                        |
+| V-9  | 结构化项（项目 M1/M2）缺失                 | 警告                     | 警告                                  |
+| V-10 | 表单既有栏目缺失                           | 警告 +`missing_fields` | 警告                                  |
 
 > 一句话：**"数据自相矛盾"可以在 strict 下被拦住；"还没填完"永远不拦。**
 
@@ -191,65 +220,65 @@ forms（表单提交，form_no 唯一）
 
 ### 认证与用户
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/auth/login` | 登录，返回 token（同时下发 Cookie） |
-| POST | `/auth/logout` | 登出 |
-| GET | `/auth/me` | 当前用户 |
-| POST | `/auth/change-password` | 改密（会吊销全部会话） |
-| GET/POST | `/users`、PATCH `/users/:id` | 用户管理（**仅管理员**） |
+| 方法     | 路径                             | 说明                                |
+| -------- | -------------------------------- | ----------------------------------- |
+| POST     | `/auth/login`                  | 登录，返回 token（同时下发 Cookie） |
+| POST     | `/auth/logout`                 | 登出                                |
+| GET      | `/auth/me`                     | 当前用户                            |
+| POST     | `/auth/change-password`        | 改密（会吊销全部会话）              |
+| GET/POST | `/users`、PATCH `/users/:id` | 用户管理（**仅管理员**）      |
 
 ### 字典与参考部件号
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/dict/items?category=` | 按类别取字典（工序/样品各维度/…） |
-| POST | `/dict/items`、PATCH `/dict/items/:id` | 维护字典项 |
-| GET/POST | `/units` | 单位 |
-| GET | `/dict/drawings?spec=&size=&side=&model=` | 参考部件号（**仅供参考**） |
-| POST | `/dict/drawings/import` | 批量导入（`items` 或制表符 `rows`） |
-| GET | `/dict/defect-columns` | 不良列定义（类别 × 表面），供调用方渲染 |
+| 方法     | 路径                                        | 说明                                     |
+| -------- | ------------------------------------------- | ---------------------------------------- |
+| GET      | `/dict/items?category=`                   | 按类别取字典（工序/样品各维度/…）       |
+| POST     | `/dict/items`、PATCH `/dict/items/:id`  | 维护字典项                               |
+| GET/POST | `/units`                                  | 单位                                     |
+| GET      | `/dict/drawings?spec=&size=&side=&model=` | 参考部件号（**仅供参考**）         |
+| POST     | `/dict/drawings/import`                   | 批量导入（`items` 或制表符 `rows`）  |
+| GET      | `/dict/defect-columns`                    | 不良列定义（类别 × 表面），供调用方渲染 |
 
 ### 样品信息
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/sample/parse` | 解析原始串 → 结构化字段 + 参考匹配 + 置信度（**纯辅助，不写库**） |
-| POST | `/sample/confirm` | 人工确认解析结果（**不改写原始串**） |
-| GET | `/sample/cache?sample_raw=` | 查看规范化键与 token 切分 |
-| GET | `/sample/pending` | 待核对清单 |
+| 方法 | 路径                          | 说明                                                                     |
+| ---- | ----------------------------- | ------------------------------------------------------------------------ |
+| POST | `/sample/parse`             | 解析原始串 → 结构化字段 + 参考匹配 + 置信度（**纯辅助，不写库**） |
+| POST | `/sample/confirm`           | 人工确认解析结果（**不改写原始串**）                               |
+| GET  | `/sample/cache?sample_raw=` | 查看规范化键与 token 切分                                                |
+| GET  | `/sample/pending`           | 待核对清单                                                               |
 
 ### 工序表单与字段目录
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/form-templates` | **工序表单目录**：每个工序的模板 + 列布局 |
-| GET | `/form-templates/:code` | 某工序的模板与完整列布局 |
-| GET | `/form-fields` | **字段目录**：5 个顶层栏目 + 35 个缺陷列 × 3 表面（105 个子列） |
+| 方法 | 路径                      | 说明                                                                   |
+| ---- | ------------------------- | ---------------------------------------------------------------------- |
+| GET  | `/form-templates`       | **工序表单目录**：每个工序的模板 + 列布局                        |
+| GET  | `/form-templates/:code` | 某工序的模板与完整列布局                                               |
+| GET  | `/form-fields`          | **字段目录**：5 个顶层栏目 + 35 个缺陷列 × 3 表面（105 个子列） |
 
 ### 表单提交（核心）
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/forms` | 列表（`keyword`/`state`/`operation_code`/样品各维度/`paper_inspector`/`paper_submitter`/`unit`/`from`/`to`/`incomplete` + 分页） |
-| POST | `/forms` | **新建提交**；`form_no` 已存在则按其字段级合并更新（返回 201） |
-| POST | `/forms/batch` | **批量提交**多张表单（`forms` 数组，整批原子） |
-| GET | `/forms/:id` | 取提交详情（含明细与全部缺陷计数；也可用表单号查询） |
-| PATCH | `/forms/:id` | **更新提交**（字段级合并；`lines` 提交则整笔替换） |
-| POST | `/forms/:id/void` | 逻辑作废 + 原因 |
-| GET | `/forms/:id/history` | 历史快照列表（按 `save_count` 倒序） |
-| GET | `/forms/:id/history/diff?from=&to=` | 字段级 + 明细级差异（`to=current`） |
-| GET | `/audit-logs?entity=&entity_id=&limit=` | 操作日志 |
+| 方法  | 路径                                      | 说明                                                                                                                                               |
+| ----- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET   | `/forms`                                | 列表（`keyword`/`state`/`operation_code`/样品各维度/`paper_inspector`/`paper_submitter`/`unit`/`from`/`to`/`incomplete` + 分页） |
+| POST  | `/forms`                                | **新建提交**；`form_no` 已存在则按其字段级合并更新（返回 201）                                                                             |
+| POST  | `/forms/batch`                          | **批量提交**多张表单（`forms` 数组，整批原子）                                                                                             |
+| GET   | `/forms/:id`                            | 取提交详情（含明细与全部缺陷计数；也可用表单号查询）                                                                                               |
+| PATCH | `/forms/:id`                            | **更新提交**（字段级合并；`lines` 提交则整笔替换）                                                                                         |
+| POST  | `/forms/:id/void`                       | 逻辑作废 + 原因                                                                                                                                    |
+| GET   | `/forms/:id/history`                    | 历史快照列表（按`save_count` 倒序）                                                                                                              |
+| GET   | `/forms/:id/history/diff?from=&to=`     | 字段级 + 明细级差异（`to=current`）                                                                                                              |
+| GET   | `/audit-logs?entity=&entity_id=&limit=` | 操作日志                                                                                                                                           |
 
 ### 汇总统计
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/stats/dimensions` | 可用分组维度 |
-| GET | `/stats/summary?group_by=operation_code,sample_spec` | 按维度分组汇总 |
-| GET | `/stats/defects` | **不良缺陷分布**：35 列 × 3 表面的合计 |
-| GET | `/stats/workload?by=submitted_by\|last_saved_by` | 工作量 |
-| GET | `/stats/incomplete-forms` | 未完成表单清单 |
+| 方法 | 路径                                                   | 说明                                          |
+| ---- | ------------------------------------------------------ | --------------------------------------------- |
+| GET  | `/stats/dimensions`                                  | 可用分组维度                                  |
+| GET  | `/stats/summary?group_by=operation_code,sample_spec` | 按维度分组汇总                                |
+| GET  | `/stats/defects`                                     | **不良缺陷分布**：35 列 × 3 表面的合计 |
+| GET  | `/stats/workload?by=submitted_by\|last_saved_by`      | 工作量                                        |
+| GET  | `/stats/incomplete-forms`                            | 未完成表单清单                                |
 
 分组维度（19 个）：`operation_code` `operation_text` `sample_project` `sample_model` `sample_spec`
 `sample_size` `sample_side` `sample_raw` `form_no` `unit`
@@ -379,14 +408,14 @@ pwsh -File scripts/e2e2.ps1   # 汇总 / 不良分布 / 未完成 / 工作量 / 
 
 ## 设计取舍（来自需求确认）
 
-| 决定 | 理由 |
-|---|---|
-| 除 `form_no` 与 `(form_id, seq)` 唯一外**不做任何强制** | 需求 F-1~F-4：生产流程繁杂且无法确认，系统不得用流程约束绑住现场 |
-| 校验**默认只警告**，`strict` 才阻断 | 需求 F-7；否则"分次填写"根本无法落地 |
-| 工序字段**在笔与行上都保留** | 需求 F-6：多工序落库形态无法确认，两种现实都要能表达 |
-| 原始串**永不被解析或人工修正改写** | 需求 B-6：以表单上的原始输入为准，参考清单只是参考 |
-| 汇总维度做成**通用 `group_by`** | 需求 §4.7：将来加维度不改接口 |
-| 权限只有两级，判定集中一处 | 需求 B-14：生产部门人员安排未定，将来可收紧而不改业务代码 |
+| 决定                                                             | 理由                                                             |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------- |
+| 除`form_no` 与 `(form_id, seq)` 唯一外**不做任何强制** | 需求 F-1~F-4：生产流程繁杂且无法确认，系统不得用流程约束绑住现场 |
+| 校验**默认只警告**，`strict` 才阻断                      | 需求 F-7；否则"分次填写"根本无法落地                             |
+| 工序字段**在笔与行上都保留**                               | 需求 F-6：多工序落库形态无法确认，两种现实都要能表达             |
+| 原始串**永不被解析或人工修正改写**                         | 需求 B-6：以表单上的原始输入为准，参考清单只是参考               |
+| 汇总维度做成**通用 `group_by`**                          | 需求 §4.7：将来加维度不改接口                                   |
+| 权限只有两级，判定集中一处                                       | 需求 B-14：生产部门人员安排未定，将来可收紧而不改业务代码        |
 
 ## 已知待办
 
