@@ -5,61 +5,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/myonku/lens-qs-api/internal/formfields"
 	"github.com/myonku/lens-qs-api/internal/pkg/httpx"
 )
 
-// 校验规则编号（对应 docs/requirements.md §4.1.3）
+// 校验规则编号（对应 docs/requirements.md §5.3）
 const (
-	RuleSumQualifiedPlusDefect = "V-1"  // 合格 + 不良 = 总数
-	RuleDefectSubtotal         = "V-2"  // 15 个子项之和 = 不良品（恒为警告）
-	RuleDefectBoundary         = "V-3"  // 子项边界
+	RuleSumQualifiedPlusDefect = "V-1"  // 合格品 + 不合格品 = 检验总数
+	RuleDefectSubtotal         = "V-2"  // 缺陷子项合计 = 不合格品（恒为警告）
+	RuleDefectBoundary         = "V-3"  // 缺陷子项边界
 	RuleNonNegative            = "V-4"  // 非负整数
-	RulePassRate               = "V-5"  // 良率派生（仅计算）
+	RulePassRate               = "V-5"  // 合格率派生（仅计算）
 	RuleTimeOrder              = "V-6"  // 时间顺序（恒为警告）
 	RuleUniqueFormNo           = "V-7"  // 唯一性（唯一硬阻断）
 	RuleSampleNotMatched       = "V-8"  // 样品信息与参考清单不匹配（恒为警告）
-	RuleSampleProjectMissing   = "V-9"  // 结构化项缺失（恒为警告）
-	RulePaperFieldMissing      = "V-10" // 表单既有栏目缺失（恒为警告）
+	RuleSampleProjectMissing   = "V-9"  // 样品结构化项缺失（恒为警告）
+	RuleFieldMissing           = "V-10" // 表单栏目缺失（恒为警告）
 )
-
-// FormPaperFields 是表单既有栏目在「笔」上的字段名（B-11）。
-var FormPaperFields = []string{
-	"submitted_by",
-	"submitted_at",
-	"inspected_by",
-	"inspected_at",
-	"machine_operator",
-	"handover_by",
-}
-
-// 字段列名 → 中文名（用于缺失提示）
-var fieldLabels = map[string]string{
-	"form_no":          "表单号",
-	"sample_raw":       "样品信息",
-	"sample_project":   "项目",
-	"sample_model":     "型号",
-	"sample_spec":      "规格",
-	"sample_size":      "大小",
-	"sample_side":      "左右",
-	"unit_id":          "单位",
-	"unit_text":        "单位",
-	"process_code":     "工序",
-	"submitted_by":     "送检人",
-	"submitted_at":     "送检时间",
-	"inspected_by":     "检验人",
-	"inspected_at":     "检验时间",
-	"machine_operator": "操机员",
-	"handover_by":      "交接员",
-	"lines":            "计数明细",
-}
-
-// Label 返回字段的中文名（未知字段返回原名）。
-func Label(field string) string {
-	if l, ok := fieldLabels[field]; ok {
-		return l
-	}
-	return field
-}
 
 // Enforce 描述校验强度。
 type Enforce string
@@ -79,11 +41,11 @@ func ParseEnforce(s string) Enforce {
 	return EnforceWarn
 }
 
-// ValidateLines 校验一笔的明细行。
+// ValidateLines 校验明细行。
 //
-// 默认全部只警告；enforce=strict 时 V-1/V-3/V-4 升级为阻断错误。
-// V-2 在任何模式下都不阻断（业务方已确认同一片镜片可计入多个不良类别，登记为待定）。
-func ValidateLines(lines []RecordLine, enforce Enforce) []httpx.Issue {
+// 默认全部只警告；`enforce=strict` 时 V-1/V-3/V-4 升级为阻断错误。
+// V-2 在任何模式下都不阻断（已确认同一片镜片可计入多个缺陷类别）。
+func ValidateLines(lines []Line, enforce Enforce) []httpx.Issue {
 	issues := make([]httpx.Issue, 0, 8)
 	strict := enforce == EnforceStrict
 	levelFor := func() string {
@@ -95,58 +57,61 @@ func ValidateLines(lines []RecordLine, enforce Enforce) []httpx.Issue {
 
 	for i, l := range lines {
 		row := strconv.Itoa(i + 1)
+		field := func(name string) string { return lineField(i, name) }
 
 		// V-4 非负
-		if negative := negativeCounts(l); len(negative) > 0 {
+		if neg := negativeFields(l); len(neg) > 0 {
 			issues = append(issues, httpx.Issue{
-				Rule: RuleNonNegative, Level: levelFor(),
-				Field:   lineField(i, negative[0]),
-				Message: "第 " + row + " 行的「" + Label(negative[0]) + "」为负值",
+				Rule: RuleNonNegative, Level: levelFor(), Field: field(neg[0]),
+				Message: "第 " + row + " 行的「" + formfields.FieldLabel(neg[0]) + "」为负值",
 			})
 		}
 
-		// V-1 合格 + 不良 = 总数（三者都还没填时不提示）
+		// V-1 合格品 + 不合格品 = 检验总数（三者都为 0 时不提示）
 		if !(l.TotalQty == 0 && l.QualifiedQty == 0 && l.DefectQty == 0) {
 			if l.QualifiedQty+l.DefectQty != l.TotalQty {
 				issues = append(issues, httpx.Issue{
-					Rule: RuleSumQualifiedPlusDefect, Level: levelFor(),
-					Field: lineField(i, "total_qty"),
+					Rule: RuleSumQualifiedPlusDefect, Level: levelFor(), Field: field("total_qty"),
 					Message: "第 " + row + " 行：合格品(" + strconv.Itoa(l.QualifiedQty) +
-						") + 不良品(" + strconv.Itoa(l.DefectQty) + ") 与检验总数(" +
+						") + 不合格品(" + strconv.Itoa(l.DefectQty) + ") 与检验总数(" +
 						strconv.Itoa(l.TotalQty) + ") 不一致",
 				})
 			}
 		}
 
-		// V-3 子项边界
-		if len(negativeCounts(l)) == 0 {
-			for _, g := range DefectGroups {
-				sum := g.Concave(l) + g.Convex(l) + g.Both(l)
+		// V-3 缺陷子项边界
+		if len(negativeFields(l)) == 0 {
+			for _, d := range formfields.DefectGroups {
+				sum := defectSum(l, d.Code)
 				if l.DefectQty > 0 && sum > l.DefectQty {
 					issues = append(issues, httpx.Issue{
-						Rule: RuleDefectBoundary, Level: levelFor(),
-						Field: lineField(i, "defect_qty"),
-						Message: "第 " + row + " 行：「" + g.Name + "」合计(" + strconv.Itoa(sum) +
-							") 超过不良品数(" + strconv.Itoa(l.DefectQty) + ")",
+						Rule: RuleDefectBoundary, Level: levelFor(), Field: field("defect_qty"),
+						Message: "第 " + row + " 行：「" + d.Label + "」合计(" + strconv.Itoa(sum) +
+							") 超过不合格品数(" + strconv.Itoa(l.DefectQty) + ")",
 					})
 				}
-				if l.TotalQty > 0 && (g.Concave(l) > l.TotalQty || g.Convex(l) > l.TotalQty || g.Both(l) > l.TotalQty) {
-					issues = append(issues, httpx.Issue{
-						Rule: RuleDefectBoundary, Level: levelFor(),
-						Field: lineField(i, "total_qty"),
-						Message: "第 " + row + " 行：「" + g.Name + "」的某个子项超过检验总数",
-					})
+				if l.TotalQty > 0 {
+					for _, s := range formfields.Surfaces {
+						if v := l.Defects[d.Code][s]; v > l.TotalQty {
+							issues = append(issues, httpx.Issue{
+								Rule: RuleDefectBoundary, Level: levelFor(), Field: field("total_qty"),
+								Message: "第 " + row + " 行：「" + d.Label + "-" +
+									formfields.SurfaceLabels[s] + "」超过检验总数",
+							})
+							break
+						}
+					}
 				}
 			}
 		}
 
 		// V-2 恒为警告
-		if !(l.DefectQty == 0 && DefectTotal(l) == 0) && DefectTotal(l) != l.DefectQty {
+		total := lineDefectTotal(l)
+		if !(l.DefectQty == 0 && total == 0) && total != l.DefectQty {
 			issues = append(issues, httpx.Issue{
-				Rule: RuleDefectSubtotal, Level: "warning",
-				Field: lineField(i, "defect_qty"),
-				Message: "第 " + row + " 行：五类不良子项合计(" + strconv.Itoa(DefectTotal(l)) +
-					") 与不良品数(" + strconv.Itoa(l.DefectQty) +
+				Rule: RuleDefectSubtotal, Level: "warning", Field: field("defect_qty"),
+				Message: "第 " + row + " 行：缺陷子项合计(" + strconv.Itoa(total) +
+					") 与不合格品数(" + strconv.Itoa(l.DefectQty) +
 					") 不一致（可能同一片镜片被计入多个类别）",
 			})
 		}
@@ -154,145 +119,118 @@ func ValidateLines(lines []RecordLine, enforce Enforce) []httpx.Issue {
 	return issues
 }
 
-// ValidateRecord 校验一笔记录的笔级字段（V-6 / V-9 / V-10，全部只警告）。
-func ValidateRecord(rec FormRecord, form *Form, now time.Time) []httpx.Issue {
-	issues := make([]httpx.Issue, 0, 4)
+// ValidateSubmission 校验表头与时间（V-6 / V-9 / V-10，全部只警告）。
+func ValidateSubmission(s Submission, now time.Time) []httpx.Issue {
+	issues := make([]httpx.Issue, 0, 6)
 
-	// V-6 送检时间 ≤ 检验时间 ≤ 当前时间（纸面时间常为人工补记，不阻断）
-	if str(rec.SubmittedAt) != "" && str(rec.InspectedAt) != "" && str(rec.SubmittedAt) > str(rec.InspectedAt) {
+	// V-6 时间顺序
+	if str(s.SubmittedAt) != "" && str(s.LastSavedAt) != "" && str(s.SubmittedAt) > str(s.LastSavedAt) {
 		issues = append(issues, httpx.Issue{
 			Rule: RuleTimeOrder, Level: "warning", Field: "submitted_at",
-			Message: "送检时间(" + str(rec.SubmittedAt) + ") 晚于检验时间(" + str(rec.InspectedAt) + ")",
+			Message: "提交时间(" + str(s.SubmittedAt) + ") 晚于最后保存时间(" + str(s.LastSavedAt) + ")",
 		})
 	}
-	if s := str(rec.InspectedAt); s != "" {
-		if t := parseAnyTime(s); !t.IsZero() && t.After(now) {
+	if v := str(s.SubmittedAt); v != "" {
+		if t := parseAnyTime(v); !t.IsZero() && t.After(now) {
 			issues = append(issues, httpx.Issue{
-				Rule: RuleTimeOrder, Level: "warning", Field: "inspected_at",
-				Message: "检验时间(" + s + ") 晚于当前时间",
+				Rule: RuleTimeOrder, Level: "warning", Field: "submitted_at",
+				Message: "提交时间(" + v + ") 晚于当前时间",
 			})
 		}
 	}
 
-	// V-9 结构化项缺失（项目 M1/M2）
-	if form != nil && str(form.SampleProject) == "" {
+	// V-9 样品结构化项缺失（项目）
+	if str(s.SampleProject) == "" {
 		issues = append(issues, httpx.Issue{
 			Rule: RuleSampleProjectMissing, Level: "warning", Field: "sample_project",
 			Message: "样品信息的「项目」（M1/M2 等）尚未填写",
 		})
 	}
 
-	// V-10 表单既有栏目缺失（仅在该笔"已经开始填"时提示，避免噪声）
-	if recordTouched(rec) {
-		for _, f := range MissingPaperFields(rec) {
+	// V-10 表单栏目缺失（已经"开始填了"才提示，避免噪声）
+	if submissionTouched(s) {
+		for _, f := range MissingFields(s) {
 			issues = append(issues, httpx.Issue{
-				Rule: RulePaperFieldMissing, Level: "warning", Field: f,
-				Message: "表单既有栏目「" + Label(f) + "」尚未填写",
+				Rule: RuleFieldMissing, Level: "warning", Field: f,
+				Message: "「" + formfields.FieldLabel(f) + "」尚未填写",
 			})
 		}
 	}
 	return issues
 }
 
-// ValidateForm 校验表单级字段（唯一性由数据库约束保证，见 V-7）。
-func ValidateForm(f Form) []httpx.Issue {
-	issues := make([]httpx.Issue, 0, 3)
-
-	if f.NeedsReview {
-		msg := "样品信息与参考部件号清单不匹配，已标记待核对（不影响保存）"
-		if str(f.SampleUnmatchedReason) != "" {
-			msg += "，原因: " + str(f.SampleUnmatchedReason)
-		}
-		issues = append(issues, httpx.Issue{
-			Rule: RuleSampleNotMatched, Level: "warning", Field: "sample_raw", Message: msg,
-		})
+// MissingFields 返回缺失的表单栏目（不阻断保存，仅作完成度提示）。
+//
+// 说明：需求允许"还没填完"（F-3），因此这里只是提示；
+// 检验工序、样品信息、明细行是"这张表填过了吗"的最低判断依据。
+func MissingFields(s Submission) []string {
+	missing := make([]string, 0, 4)
+	if strings.TrimSpace(s.OperationCode) == "" {
+		missing = append(missing, "operation_code")
 	}
-	if strings.TrimSpace(f.SampleRaw) == "" {
-		issues = append(issues, httpx.Issue{
-			Rule: RulePaperFieldMissing, Level: "warning", Field: "sample_raw",
-			Message: "「样品信息」尚未填写",
-		})
+	if str(s.UnitID) == "" && str(s.UnitText) == "" {
+		missing = append(missing, "unit_id")
 	}
-	if str(f.UnitID) == "" && str(f.UnitText) == "" {
-		issues = append(issues, httpx.Issue{
-			Rule: RulePaperFieldMissing, Level: "warning", Field: "unit_id",
-			Message: "「单位」尚未填写",
-		})
+	if strings.TrimSpace(s.SampleRaw) == "" {
+		missing = append(missing, "sample_raw")
 	}
-	return issues
-}
-
-// MissingPaperFields 返回该笔缺失的表单既有栏目的列名。
-func MissingPaperFields(rec FormRecord) []string {
-	missing := make([]string, 0, len(FormPaperFields))
-	add := func(field string, v *string) {
-		if str(v) == "" {
-			missing = append(missing, field)
-		}
+	if len(s.Lines) == 0 {
+		missing = append(missing, "lines")
 	}
-	add("submitted_by", rec.SubmittedBy)
-	add("submitted_at", rec.SubmittedAt)
-	add("inspected_by", rec.InspectedBy)
-	add("inspected_at", rec.InspectedAt)
-	add("machine_operator", rec.MachineOperator)
-	add("handover_by", rec.HandoverBy)
 	return missing
 }
 
-// ComputeCompleteness 计算完成度：缺失项清单与 is_complete。
-func ComputeCompleteness(rec FormRecord, lines []RecordLine) (missing []string, complete bool) {
-	missing = MissingPaperFields(rec)
-	if len(lines) == 0 {
-		missing = append(missing, "lines")
-	}
+// ComputeCompleteness 计算完成度。
+func ComputeCompleteness(s Submission, lines []Line) (missing []string, complete bool) {
+	s.Lines = lines
+	missing = MissingFields(s)
 	return missing, len(missing) == 0
 }
 
-// ComputeTotals 按笔的明细行汇总（服务端重算，忽略调用方上报的汇总值）。
-func ComputeTotals(lines []RecordLine) (total, qualified, defect int, passRate *float64) {
-	for _, l := range lines {
-		total += l.TotalQty
-		qualified += l.QualifiedQty
-		defect += l.DefectQty
-	}
-	if total > 0 {
-		r := round2(float64(qualified) / float64(total) * 100)
-		passRate = &r
-	}
-	return total, qualified, defect, passRate
+func submissionTouched(s Submission) bool {
+	return s.OperationCode != "" || s.TotalQty != 0 || s.QualifiedQty != 0 ||
+		s.DefectQty != 0 || len(s.Lines) > 0 || strings.TrimSpace(s.SampleRaw) != ""
 }
 
-func round2(v float64) float64 { return float64(int64(v*100+0.5)) / 100 }
-
-func recordTouched(rec FormRecord) bool {
-	return rec.ProcessCode != nil || rec.SubmittedBy != nil || rec.InspectedBy != nil ||
-		rec.MachineOperator != nil || rec.HandoverBy != nil ||
-		rec.SubmittedAt != nil || rec.InspectedAt != nil
-}
-
-func negativeCounts(l RecordLine) []string {
+func negativeFields(l Line) []string {
 	out := make([]string, 0, 4)
-	check := func(field string, v int) {
+	check := func(name string, v int) {
 		if v < 0 {
-			out = append(out, field)
+			out = append(out, name)
 		}
 	}
 	check("total_qty", l.TotalQty)
 	check("qualified_qty", l.QualifiedQty)
 	check("defect_qty", l.DefectQty)
-	for _, g := range DefectGroups {
-		check(g.Code+"_concave", g.Concave(l))
-		check(g.Code+"_convex", g.Convex(l))
-		check(g.Code+"_both", g.Both(l))
+	for _, d := range formfields.DefectGroups {
+		for _, s := range formfields.Surfaces {
+			check(formfields.DefectFieldName(d.Code, s), l.Defects[d.Code][s])
+		}
 	}
 	return out
 }
 
-func lineField(idx int, field string) string {
-	if idx == 0 {
-		return field
+func defectSum(l Line, code string) int {
+	sum := 0
+	for _, s := range formfields.Surfaces {
+		sum += l.Defects[code][s]
 	}
-	return "lines[" + strconv.Itoa(idx) + "]." + field
+	return sum
+}
+
+func lineDefectTotal(l Line) int {
+	sum := 0
+	for _, d := range formfields.DefectGroups {
+		sum += defectSum(l, d.Code)
+	}
+	return sum
+}
+
+func lineField(idx int, name string) string {
+	if idx == 0 {
+		return name
+	}
+	return "lines[" + strconv.Itoa(idx) + "]." + name
 }
 
 func parseAnyTime(s string) time.Time {

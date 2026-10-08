@@ -2,7 +2,6 @@ package inspection
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -10,12 +9,13 @@ import (
 
 	"github.com/jmoiron/sqlx"
 
+	"github.com/myonku/lens-qs-api/internal/formfields"
+	"github.com/myonku/lens-qs-api/internal/operations"
 	"github.com/myonku/lens-qs-api/internal/pkg/httpx"
-	"github.com/myonku/lens-qs-api/internal/pkg/id"
 	"github.com/myonku/lens-qs-api/internal/store"
 )
 
-// Service 实现表单 / 笔的保存、历史与校验。
+// Service 实现表单提交的保存、历史与校验。
 type Service struct {
 	store *Store
 }
@@ -34,27 +34,23 @@ type Actor struct {
 	UserAgent   string
 }
 
-// SaveInput 是一次保存请求（字段级合并语义）。
+// SaveInput 是一次表单提交请求（字段级合并语义）。
 type SaveInput struct {
-	FormNo      string          // 必填：表单号
-	SequenceNo  *int            // 指定则更新该笔，未指定则新建一笔
-	RecordID    string          // 直接按笔 ID 更新（内部使用）
-	FormPatch   Patch           // 表单级字段补丁
-	RecordPatch Patch           // 笔级字段补丁
-	Lines       []RecordLine    // 提交则整笔替换明细
-	LinesGiven  bool            // 是否提交了 lines
-	Enforce     Enforce         // 校验强度
-	SaveMode    string          // merge（默认）| replace
-	Reason      string          // 变更原因（写入历史）
-	Expected    *int            // 乐观锁：期望的 save_count
-	Raw         json.RawMessage // 原始请求体，作为操作日志的 after 快照
+	FormNo       string          // 表单号（为空时自动生成）
+	SubmissionID string          // 指定则更新该提交，否则按 FormNo 找/建
+	Operation    string          // 工序表单编码（决定默认列集合；可空）
+	Patch        *FormPatch      // 字段补丁
+	LinesGiven   bool            // 是否提交了 lines（提交即整笔替换）
+	Enforce      Enforce         // 校验强度
+	Reason       string          // 变更原因（写入历史与日志）
+	Expected     *int            // 乐观锁：期望的 save_count
+	Raw          json.RawMessage // 原始请求体（操作日志的 after）
 }
 
 // SaveResult 是保存结果。
 type SaveResult struct {
-	Action        string        `json:"action"` // create_form | create_record | save_record | replace_record
-	Form          *Form         `json:"form"`
-	Record        *FormRecord   `json:"record"`
+	Action        string        `json:"action"` // create_form | save_form
+	Submission    *Submission   `json:"submission"`
 	Issues        []httpx.Issue `json:"issues"`
 	Warnings      []httpx.Issue `json:"warnings"`
 	Errors        []httpx.Issue `json:"errors"`
@@ -62,48 +58,21 @@ type SaveResult struct {
 	IsComplete    bool          `json:"is_complete"`
 }
 
-// SaveForm 创建或更新表单级信息（不涉及笔）。
-func (s *Service) SaveForm(ctx context.Context, actor Actor, in SaveInput) (*SaveResult, error) {
-	if strings.TrimSpace(in.FormNo) == "" {
-		return nil, httpx.BadRequest("表单号（form_no）不能为空")
-	}
+// Save 保存一次表单提交（核心接口）。
+//
+// 语义：
+//   - 表单号不存在则创建（save_count=1），存在则**字段级合并**（save_count+1）；
+//   - `lines` 一旦给出即整笔替换明细；
+//   - 有明细时表头汇总按明细行重算；合格率按 合格品/检验总数 计算；
+//   - 保存前写快照 + 操作日志。
+func (s *Service) Save(ctx context.Context, actor Actor, in SaveInput) (*SaveResult, error) {
 	tx, err := s.store.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("开启事务失败: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	form, action, unknown, err := s.upsertForm(ctx, tx, actor, in)
-	if err != nil {
-		return nil, err
-	}
-	if len(unknown) > 0 {
-		return nil, httpx.BadRequest("存在无法识别的表单字段", ginH(unknown))
-	}
-
-	issues := append(ValidateForm(*form), formLevelUnknownPlaceholder()...)
-	if err := s.writeAudit(ctx, tx, actor, action, "form", form.ID, nil, in.Raw, nil); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("提交事务失败: %w", err)
-	}
-	return &SaveResult{Action: action, Form: form, Issues: issues, Warnings: httpx.Warnings(issues), Errors: httpx.Errors(issues)}, nil
-}
-
-// SaveRecord 保存一笔工序记录（核心接口，字段级合并）。
-// 单笔调用：自带事务，处理完即提交。
-func (s *Service) SaveRecord(ctx context.Context, actor Actor, in SaveInput) (*SaveResult, error) {
-	if strings.TrimSpace(in.FormNo) == "" {
-		return nil, httpx.BadRequest("表单号（form_no）不能为空")
-	}
-	tx, err := s.store.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("开启事务失败: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	res, err := s.saveRecordTx(ctx, tx, actor, in)
+	res, err := s.saveTx(ctx, tx, actor, in)
 	if err != nil {
 		return nil, err
 	}
@@ -113,23 +82,11 @@ func (s *Service) SaveRecord(ctx context.Context, actor Actor, in SaveInput) (*S
 	return res, nil
 }
 
-// SaveBatch 在同一事务内依次保存同一表单下的多笔记录（次日集中录入场景）。
-//
-// 与逐笔调用 SaveRecord 的区别：**整批原子** —— 任一笔失败则整批回滚，
-// 不会留下"一半成功"的表单与笔。
+// SaveBatch 在同一事务内依次保存多张表单（整批原子：任一失败则整批回滚）。
 func (s *Service) SaveBatch(ctx context.Context, actor Actor, ins []SaveInput) ([]*SaveResult, error) {
 	if len(ins) == 0 {
-		return nil, httpx.BadRequest("records 不能为空")
+		return nil, httpx.BadRequest("forms 不能为空")
 	}
-	for i := range ins {
-		if strings.TrimSpace(ins[i].FormNo) == "" {
-			return nil, httpx.BadRequest("表单号（form_no）不能为空")
-		}
-		// 批量语义：逐笔新建，忽略顶层传入的笔 ID 与乐观锁期望值
-		ins[i].RecordID = ""
-		ins[i].Expected = nil
-	}
-
 	tx, err := s.store.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("开启事务失败: %w", err)
@@ -138,10 +95,9 @@ func (s *Service) SaveBatch(ctx context.Context, actor Actor, ins []SaveInput) (
 
 	results := make([]*SaveResult, 0, len(ins))
 	for i := range ins {
-		res, err := s.saveRecordTx(ctx, tx, actor, ins[i])
+		res, err := s.saveTx(ctx, tx, actor, ins[i])
 		if err != nil {
-			// 整批回滚：用第几笔定位问题，便于调用方排查
-			return nil, fmt.Errorf("第 %d 笔保存失败: %w", i+1, err)
+			return nil, fmt.Errorf("第 %d 张表单保存失败: %w", i+1, err)
 		}
 		results = append(results, res)
 	}
@@ -151,187 +107,178 @@ func (s *Service) SaveBatch(ctx context.Context, actor Actor, ins []SaveInput) (
 	return results, nil
 }
 
-// saveRecordTx 是保存一笔的实际逻辑（调用方负责事务的开启与提交）。
-func (s *Service) saveRecordTx(ctx context.Context, tx *sqlx.Tx, actor Actor, in SaveInput) (*SaveResult, error) {
-	// 1) 表单：不存在则创建，存在则按补丁合并
-	form, formAction, unknown, err := s.upsertForm(ctx, tx, actor, in)
-	if err != nil {
-		return nil, err
+func (s *Service) saveTx(ctx context.Context, tx *sqlx.Tx, actor Actor, in SaveInput) (*SaveResult, error) {
+	patch := in.Patch
+	if patch == nil {
+		patch = &FormPatch{}
 	}
-	if len(unknown) > 0 {
-		return nil, httpx.BadRequest("存在无法识别的表单字段", ginH(unknown))
+	if err := patch.ValidateFieldNames(); err != nil {
+		return nil, httpx.BadRequest(err.Error())
 	}
 
-	// 2) 定位目标笔：按 ID 或按 (表单, 序号)，都没有则新建
+	// 1) 定位或创建提交
 	var (
-		rec         *FormRecord
-		recordActed string
+		sub    *Submission
+		before *Submission
+		action = "save_form"
 	)
-	switch {
-	case in.RecordID != "":
-		rec, err = s.store.LockRecord(ctx, tx, in.RecordID)
+
+	if in.SubmissionID != "" {
+		cur, err := s.store.LockSubmission(ctx, tx, in.SubmissionID)
 		if err != nil {
 			return nil, err
 		}
-		if rec == nil {
-			return nil, httpx.NotFound("工序记录不存在")
+		if cur == nil {
+			return nil, httpx.NotFound("表单提交不存在")
 		}
-		if rec.FormID != form.ID {
-			return nil, httpx.BadRequest("该工序记录不属于指定表单")
+		sub = cur
+	} else {
+		formNo := strings.TrimSpace(in.FormNo)
+		if formNo == "" {
+			generated, err := s.nextFormNo(ctx, tx)
+			if err != nil {
+				return nil, err
+			}
+			formNo = generated
 		}
-		recordActed = "save_record"
-	case in.SequenceNo != nil:
-		rec, err = s.findRecordBySeq(ctx, tx, form.ID, *in.SequenceNo)
+		cur, err := s.store.LockSubmissionByNo(ctx, tx, formNo)
 		if err != nil {
 			return nil, err
 		}
-		if rec == nil {
-			rec = &FormRecord{FormID: form.ID, SequenceNo: *in.SequenceNo}
-			recordActed = "create_record"
+		if cur == nil {
+			sub = &Submission{FormNo: formNo, State: StateActive, SaveCount: 1}
+			if op := strings.TrimSpace(in.Operation); op != "" {
+				sub.OperationCode = op
+			}
+			action = "create_form"
 		} else {
-			recordActed = "save_record"
+			sub = cur
 		}
-	default:
-		seq, err := s.store.NextSequenceNo(ctx, tx, form.ID)
-		if err != nil {
-			return nil, err
-		}
-		rec = &FormRecord{FormID: form.ID, SequenceNo: seq}
-		recordActed = "create_record"
 	}
 
-	isNew := rec.ID == ""
-	if !isNew && in.Expected != nil && *in.Expected != rec.SaveCount {
+	isNew := action == "create_form"
+
+	// 2) 乐观锁
+	if !isNew && in.Expected != nil && *in.Expected != sub.SaveCount {
 		return nil, httpx.Conflict(
-			fmt.Sprintf("该记录已被他人修改（期望保存次数 %d，实际 %d）", *in.Expected, rec.SaveCount),
-			ginH(map[string]any{"current": rec, "current_save_count": rec.SaveCount}),
+			fmt.Sprintf("该表单已被他人修改（期望保存次数 %d，实际 %d）", *in.Expected, sub.SaveCount),
+			map[string]any{"current": sub, "current_save_count": sub.SaveCount},
 		)
 	}
 
-	// 3) 更新前先取旧内容：用于历史快照与操作日志的 before
-	var (
-		beforeForm   *Form
-		beforeRecord *FormRecord
-		beforeLines  []RecordLine
-	)
+	// 3) 取保存前的旧内容（历史快照与操作日志的 before）
+	var beforeLines []Line
 	if !isNew {
-		beforeFormCopy := *form
-		beforeRecordCopy := *rec
-		beforeForm = &beforeFormCopy
-		beforeRecord = &beforeRecordCopy
-		beforeLines, err = s.store.ListLinesTx(ctx, tx, rec.ID)
+		cur := *sub
+		before = &cur
+		lines, err := s.store.ListLinesTx(ctx, tx, sub.ID)
 		if err != nil {
 			return nil, err
 		}
+		beforeLines = lines
 	}
 
-	// 4) 字段级合并笔级字段
-	if in.SaveMode == "replace" {
-		// 整体替换：保留不可变字段，其余清零后由补丁写入
-		preserved := FormRecord{
-			ID: rec.ID, FormID: rec.FormID, SequenceNo: rec.SequenceNo,
-			RecordedBy: rec.RecordedBy, RecordedAt: rec.RecordedAt,
-			CreatedAt: rec.CreatedAt, State: rec.State,
-		}
-		*rec = preserved
-	}
-	unknownRec, err := in.RecordPatch.Merge(rec, "form_id", "sequence_no", "save_count",
-		"is_complete", "missing_fields", "total_qty", "qualified_qty", "defect_qty",
-		"pass_rate", "state", "voided_at", "void_reason", "created_at")
-	if err != nil {
-		return nil, httpx.BadRequest("工序记录字段解析失败: " + err.Error())
-	}
-	if len(unknownRec) > 0 {
-		return nil, httpx.BadRequest("存在无法识别的工序记录字段", ginH(unknownRec))
-	}
-
-	// 5) 系统留痕
-	now := store.FormatTime(time.Now())
+	// 4) 应用补丁（字段级合并）
+	patch.ApplyTo(sub)
 	if isNew {
-		rec.RecordedBy = &actor.UserID
-		rec.RecordedAt = &now
-		rec.SaveCount = 1
+		sub.SaveCount = 1
 	} else {
-		rec.SaveCount++
+		sub.SaveCount++
 	}
-	rec.LastSavedBy = &actor.UserID
-	rec.LastSavedAt = &now
+	now := store.FormatTime(time.Now())
+	if sub.SubmittedBy == nil {
+		sub.SubmittedBy = &actor.UserID
+	}
+	if sub.SubmittedAt == nil {
+		sub.SubmittedAt = &now
+	}
+	sub.LastSavedBy = &actor.UserID
+	sub.LastSavedAt = &now
+	if sub.State == "" {
+		sub.State = StateActive
+	}
 
-	// 6) 明细：提交则整笔替换
-	var lines []RecordLine
+	// 5) 明细：给出即整笔替换
+	var lines []Line
 	if in.LinesGiven {
-		lines = in.Lines
-	} else if rec.ID != "" {
-		lines, err = s.store.ListLinesTx(ctx, tx, rec.ID)
+		lines = buildLines(patch.Lines)
+	} else if !isNew {
+		cur, err := s.store.ListLinesTx(ctx, tx, sub.ID)
 		if err != nil {
 			return nil, err
 		}
+		lines = cur
 	}
 
-	// 7) 服务端重算汇总与完成度
-	rec.TotalQty, rec.QualifiedQty, rec.DefectQty, rec.PassRate = ComputeTotals(lines)
-	missing, complete := ComputeCompleteness(*rec, lines)
-	rec.IsComplete = complete
-	if b, err := json.Marshal(missing); err == nil {
-		mf := string(b)
-		rec.MissingFields = &mf
+	// 6) 汇总：
+	//    a) 有明细 → 按明细重算；
+	//    b) 但本次补丁里**显式给出**的表头栏目优先（支持"表头是合计值、与明细不全对应"的纸质填法）。
+	if len(lines) > 0 {
+		total, qualified, defect := Aggregate(lines)
+		totalSet, qualifiedSet, defectSet := patch.AppliedHeaderFields()
+		if !totalSet {
+			sub.TotalQty = total
+		}
+		if !qualifiedSet {
+			sub.QualifiedQty = qualified
+		}
+		if !defectSet {
+			sub.DefectQty = defect
+		}
+	}
+	if !patch.PassRate.IsSet {
+		if r := ComputePassRate(sub.QualifiedQty, sub.TotalQty); r != nil {
+			sub.PassRate = r
+		}
 	}
 
-	// 8) 校验（默认只警告）
+	// 7) 完成度与校验
+	missing, complete := ComputeCompleteness(*sub, lines)
+	sub.MissingFields = missing
+	sub.IsComplete = complete
+
 	issues := make([]httpx.Issue, 0, 12)
-	issues = append(issues, ValidateForm(*form)...)
-	issues = append(issues, ValidateRecord(*rec, form, time.Now())...)
+	issues = append(issues, ValidateSubmission(*sub, time.Now())...)
 	issues = append(issues, ValidateLines(lines, in.Enforce)...)
 	if errs := httpx.Errors(issues); len(errs) > 0 {
 		return nil, httpx.Validation("校验未通过（enforce=strict）", errs)
 	}
 
-	// 9) 落库
+	// 8) 落库
 	if isNew {
-		if err := s.store.InsertRecord(ctx, tx, rec); err != nil {
+		if err := s.store.InsertSubmission(ctx, tx, sub); err != nil {
 			return nil, err
 		}
 	} else {
-		// 写历史快照（保存前的内容）
-		if err := s.writeHistory(ctx, tx, beforeForm, beforeRecord, beforeLines, actor, in.Reason); err != nil {
+		if err := s.writeHistory(ctx, tx, before, beforeLines, actor, in.Reason); err != nil {
 			return nil, err
 		}
-		if err := s.store.UpdateRecord(ctx, tx, rec); err != nil {
+		if err := s.store.UpdateSubmission(ctx, tx, sub); err != nil {
 			return nil, err
 		}
 	}
 	if in.LinesGiven {
-		if err := s.store.ReplaceLines(ctx, tx, rec.ID, lines); err != nil {
+		if err := s.store.ReplaceLines(ctx, tx, sub.ID, lines); err != nil {
 			return nil, err
 		}
 	}
 
-	// 10) 操作日志
-	action := recordActed
-	if formAction == "create_form" {
-		action = "create_form+" + recordActed
+	// 9) 操作日志
+	var beforeJSON []byte
+	if before != nil {
+		beforeJSON, _ = json.Marshal(map[string]any{"submission": before, "lines": beforeLines})
 	}
-	var before []byte
-	if beforeRecord != nil {
-		before, _ = json.Marshal(struct {
-			Form   *Form        `json:"form"`
-			Record *FormRecord  `json:"record"`
-			Lines  []RecordLine `json:"lines"`
-		}{beforeForm, beforeRecord, beforeLines})
-	}
-	if err := s.writeAudit(ctx, tx, actor, action, "form_record", rec.ID, before, in.Raw, nil); err != nil {
+	if err := s.writeAudit(ctx, tx, actor, action, sub.ID, beforeJSON, in.Raw, nil); err != nil {
 		return nil, err
 	}
 
-	rec.Form = form
-	rec.Lines = lines
-	if lines == nil {
-		rec.Lines = []RecordLine{}
+	sub.Lines = lines
+	if sub.Lines == nil {
+		sub.Lines = []Line{}
 	}
 	return &SaveResult{
 		Action:        action,
-		Form:          form,
-		Record:        rec,
+		Submission:    sub,
 		Issues:        issues,
 		Warnings:      httpx.Warnings(issues),
 		Errors:        httpx.Errors(issues),
@@ -340,119 +287,104 @@ func (s *Service) saveRecordTx(ctx context.Context, tx *sqlx.Tx, actor Actor, in
 	}, nil
 }
 
-// VoidRecord 逻辑作废一笔（数据与历史全部保留）。
-func (s *Service) VoidRecord(ctx context.Context, actor Actor, recordID, reason string) (*FormRecord, error) {
+// VoidForm 逻辑作废一次提交（数据与历史全部保留）。
+func (s *Service) VoidForm(ctx context.Context, actor Actor, submissionID, reason string) (*Submission, error) {
 	tx, err := s.store.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("开启事务失败: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	rec, err := s.store.LockRecord(ctx, tx, recordID)
+	sub, err := s.store.LockSubmission(ctx, tx, submissionID)
 	if err != nil {
 		return nil, err
 	}
-	if rec == nil {
-		return nil, httpx.NotFound("工序记录不存在")
+	if sub == nil {
+		return nil, httpx.NotFound("表单提交不存在")
 	}
 	now := store.FormatTime(time.Now())
-	rec.State = "VOID"
-	rec.VoidedAt = &now
+	sub.State = StateVoid
+	sub.VoidedAt = &now
 	if strings.TrimSpace(reason) != "" {
-		rec.VoidReason = &reason
+		sub.VoidReason = &reason
 	}
-	if err := s.store.UpdateRecord(ctx, tx, rec); err != nil {
+	if err := s.store.UpdateSubmission(ctx, tx, sub); err != nil {
 		return nil, err
 	}
-	if err := s.writeAudit(ctx, tx, actor, "void_record", "form_record", rec.ID, nil, nil, &reason); err != nil {
+	if err := s.writeAudit(ctx, tx, actor, "void_form", sub.ID, nil, nil, &reason); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("提交事务失败: %w", err)
 	}
-	return rec, nil
+	return sub, nil
 }
 
-// ------------------------------- 内部辅助 -------------------------------
+// buildLines 把行补丁转换为明细行（seq 缺省时按顺序编号）。
+func buildLines(patches []LinePatch) []Line {
+	out := make([]Line, 0, len(patches))
+	for i := range patches {
+		l := Line{Seq: i + 1}
+		patches[i].ApplyToLine(&l)
+		out = append(out, l)
+	}
+	return out
+}
 
-func (s *Service) upsertForm(ctx context.Context, tx *sqlx.Tx, actor Actor, in SaveInput) (*Form, string, []string, error) {
-	form, err := s.store.LockFormByNo(ctx, tx, in.FormNo)
+// nextFormNo 生成表单号：{YYMMDD}-{当日流水:3}。
+//
+// 说明：与纸质表单的 `M-260908-01` 格式不同，这里用更简单的日期+流水；
+// 调用方也可以直接传 form_no 覆盖（需求 N-3）。
+func (s *Service) nextFormNo(ctx context.Context, tx *sqlx.Tx) (string, error) {
+	day := time.Now().Format("060102")
+	prefix := day + "-"
+	var maxNo *string
+	err := tx.GetContext(ctx, &maxNo,
+		s.store.rebind(`SELECT MAX(form_no) FROM forms WHERE form_no LIKE ?`), prefix+"%")
 	if err != nil {
-		return nil, "", nil, err
+		return "", fmt.Errorf("生成表单号失败: %w", err)
 	}
-	action := "update_form"
-	if form == nil {
-		form = &Form{FormNo: in.FormNo, State: "ACTIVE", SampleParsedBy: "auto"}
-		action = "create_form"
-	}
-	if unknown, err := in.FormPatch.Merge(form, "form_no", "created_by", "created_at"); err != nil {
-		return nil, "", nil, httpx.BadRequest("表单字段解析失败: " + err.Error())
-	} else if len(unknown) > 0 {
-		return form, action, unknown, nil
-	}
-	form.UpdatedBy = &actor.UserID
-	if action == "create_form" {
-		form.CreatedBy = &actor.UserID
-		if err := s.store.InsertForm(ctx, tx, form); err != nil {
-			return nil, "", nil, err
+	seq := 1
+	if maxNo != nil {
+		parts := strings.SplitN(*maxNo, "-", 2)
+		if len(parts) == 2 {
+			if n := parseIntBytes([]byte(parts[1])); n > 0 {
+				seq = n + 1
+			}
 		}
-		return form, action, nil, nil
 	}
-	if err := s.store.UpdateForm(ctx, tx, form); err != nil {
-		return nil, "", nil, err
-	}
-	return form, action, nil, nil
+	return fmt.Sprintf("%s%03d", prefix, seq), nil
 }
 
-func (s *Service) findRecordBySeq(ctx context.Context, tx *sqlx.Tx, formID string, seq int) (*FormRecord, error) {
-	var r FormRecord
-	err := tx.GetContext(ctx, &r, s.store.rebind(`SELECT `+recordColumns+`
-		FROM form_records WHERE form_id = ? AND sequence_no = ?`), formID, seq)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("查询工序记录失败: %w", err)
-	}
-	return &r, nil
-}
-
-func (s *Service) writeHistory(ctx context.Context, tx *sqlx.Tx, form *Form, rec *FormRecord, lines []RecordLine, actor Actor, reason string) error {
-	if rec == nil {
+func (s *Service) writeHistory(ctx context.Context, tx *sqlx.Tx, before *Submission, beforeLines []Line, actor Actor, reason string) error {
+	if before == nil {
 		return nil
 	}
 	entry := &HistoryEntry{
-		RecordID:  rec.ID,
-		FormID:    rec.FormID,
-		SaveCount: rec.SaveCount,
+		FormID:    before.ID,
+		SaveCount: before.SaveCount,
+		SavedBy:   before.LastSavedBy,
+		SavedAt:   before.LastSavedAt,
 		ChangedBy: &actor.UserID,
 	}
-	if form != nil {
-		if b, err := json.Marshal(form); err == nil {
-			s := string(b)
-			entry.FormSnapshot = &s
-		}
+	if b, err := json.Marshal(before); err == nil {
+		str := string(b)
+		entry.SubmissionSnapshot = &str
 	}
-	if b, err := json.Marshal(rec); err == nil {
-		s := string(b)
-		entry.RecordSnapshot = &s
+	if b, err := json.Marshal(beforeLines); err == nil {
+		str := string(b)
+		entry.LinesSnapshot = &str
 	}
-	if b, err := json.Marshal(lines); err == nil {
-		s := string(b)
-		entry.LinesSnapshot = &s
-	}
-	entry.SavedBy = rec.LastSavedBy
-	entry.SavedAt = rec.LastSavedAt
 	if strings.TrimSpace(reason) != "" {
 		entry.Reason = &reason
 	}
 	return s.store.InsertHistory(ctx, tx, entry)
 }
 
-func (s *Service) writeAudit(ctx context.Context, tx *sqlx.Tx, actor Actor, action, entity, entityID string, before, after []byte, detail *string) error {
+func (s *Service) writeAudit(ctx context.Context, tx *sqlx.Tx, actor Actor, action, entityID string, before, after []byte, detail *string) error {
 	e := &AuditEntry{
 		Action:    action,
-		Entity:    entity,
+		Entity:    "form",
 		EntityID:  &entityID,
 		CreatedAt: store.FormatTime(time.Now()),
 	}
@@ -469,22 +401,32 @@ func (s *Service) writeAudit(ctx context.Context, tx *sqlx.Tx, actor Actor, acti
 		e.UserAgent = &actor.UserAgent
 	}
 	if len(before) > 0 {
-		s := string(before)
-		e.Before = &s
+		str := string(before)
+		e.Before = &str
 	}
 	if len(after) > 0 {
-		s := string(after)
-		e.After = &s
+		str := string(after)
+		e.After = &str
 	}
 	e.Detail = detail
 	return s.store.InsertAudit(ctx, tx, e)
 }
 
-// ginH 构造响应 details（避免直接依赖 gin）。
-func ginH(v any) any { return v }
+// TemplateFor 返回某工序对应的表单模板。
+func TemplateFor(operationCode string) operations.Template {
+	return operations.Find(operationCode)
+}
 
-// formLevelUnknownPlaceholder 预留：表单级额外提示（当前无）。
-func formLevelUnknownPlaceholder() []httpx.Issue { return nil }
-
-// NewID 暴露 ID 生成，供 handler 在批量保存时预分配。
-func NewID() string { return id.New() }
+// LayoutFor 返回某工序表单的列布局（供前端渲染）。
+func LayoutFor(operationCode string) map[string]any {
+	tpl := TemplateFor(operationCode)
+	layout := formfields.BuildLayout()
+	return map[string]any{
+		"operation":      tpl,
+		"header_columns": layout.Header,
+		"defect_group":   layout.DefectGroup,
+		"surfaces":       layout.Surfaces,
+		"surface_labels": layout.SurfaceLabels,
+		"defect_columns": layout.DefectColumns,
+	}
+}

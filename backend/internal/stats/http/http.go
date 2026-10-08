@@ -31,21 +31,20 @@ func (h *Handler) dimensions(c *gin.Context) {
 	httpx.OK(c, gin.H{"dimensions": stats.SupportedDimensions()})
 }
 
-// filterFromQuery 从 query 读取筛选条件；onlyActive 默认 true。
+// filterFromQuery 从 query 读取筛选条件；默认只看未作废的（include_void=true 可含已作废）。
 func filterFromQuery(c *gin.Context) stats.Filter {
-	onlyActive := c.Query("include_void") != "true"
 	return stats.Filter{
-		From:        c.Query("from"),
-		To:          c.Query("to"),
-		Process:     c.Query("process"),
-		Project:     c.Query("sample_project"),
-		Model:       c.Query("sample_model"),
-		Spec:        c.Query("sample_spec"),
-		Size:        c.Query("sample_size"),
-		Side:        c.Query("sample_side"),
-		InspectedBy: c.Query("inspected_by"),
-		Unit:        c.Query("unit"),
-		OnlyActive:  onlyActive,
+		From:          c.Query("from"),
+		To:            c.Query("to"),
+		OperationCode: c.Query("operation_code"),
+		Project:       c.Query("sample_project"),
+		Model:         c.Query("sample_model"),
+		Spec:          c.Query("sample_spec"),
+		Size:          c.Query("sample_size"),
+		Side:          c.Query("sample_side"),
+		SubmittedBy:   c.Query("submitted_by"),
+		Unit:          c.Query("unit"),
+		OnlyActive:    c.Query("include_void") != "true",
 	}
 }
 
@@ -77,7 +76,7 @@ func (h *Handler) defects(c *gin.Context) {
 }
 
 func (h *Handler) workload(c *gin.Context) {
-	field := c.DefaultQuery("by", "inspected_by")
+	field := c.DefaultQuery("by", "submitted_by")
 	list, err := h.svc.WorkloadBy(c.Request.Context(), filterFromQuery(c), field)
 	if err != nil {
 		httpx.Fail(c, err)

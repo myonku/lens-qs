@@ -2,133 +2,156 @@ package inspection
 
 import (
 	"reflect"
-	"strconv"
+
+	"github.com/myonku/lens-qs-api/internal/formfields"
 )
 
 // FieldChange 是一条字段级变更。
 type FieldChange struct {
-	Scope string `json:"scope"`           // record | line
-	Field string `json:"field"`           // 字段名（数据库列名）
+	Scope string `json:"scope"`           // submission | line
+	Field string `json:"field"`           // 字段名（表头栏目或扁平缺陷列名）
 	Label string `json:"label,omitempty"` // 中文名
 	Index int    `json:"index,omitempty"` // 明细行序号（scope=line 时有效）
 	From  any    `json:"from"`
 	To    any    `json:"to"`
 }
 
-// DiffRecords 比较两版记录（含明细）的差异，用于"这次改了什么"。
-func DiffRecords(from *FormRecord, fromLines []RecordLine, to *FormRecord, toLines []RecordLine) []FieldChange {
+// submissionScalarFields 参与差异比较的表头字段。
+var submissionScalarFields = []struct {
+	Field string
+	Get   func(Submission) any
+}{
+	{"operation_code", func(s Submission) any { return s.OperationCode }},
+	{"operation_text", func(s Submission) any { return deref(s.OperationText) }},
+	{"total_qty", func(s Submission) any { return s.TotalQty }},
+	{"qualified_qty", func(s Submission) any { return s.QualifiedQty }},
+	{"defect_qty", func(s Submission) any { return s.DefectQty }},
+	{"pass_rate", func(s Submission) any { return derefFloat(s.PassRate) }},
+	{"sample_raw", func(s Submission) any { return s.SampleRaw }},
+	{"sample_project", func(s Submission) any { return deref(s.SampleProject) }},
+	{"sample_model", func(s Submission) any { return deref(s.SampleModel) }},
+	{"sample_spec", func(s Submission) any { return deref(s.SampleSpec) }},
+	{"sample_size", func(s Submission) any { return deref(s.SampleSize) }},
+	{"sample_side", func(s Submission) any { return deref(s.SampleSide) }},
+	{"unit_id", func(s Submission) any { return deref(s.UnitID) }},
+	{"unit_text", func(s Submission) any { return deref(s.UnitText) }},
+	{"remark", func(s Submission) any { return deref(s.Remark) }},
+	{"is_complete", func(s Submission) any { return s.IsComplete }},
+	{"missing_fields", func(s Submission) any { return s.MissingFields }},
+	{"save_count", func(s Submission) any { return s.SaveCount }},
+	{"last_saved_by", func(s Submission) any { return deref(s.LastSavedBy) }},
+	{"last_saved_at", func(s Submission) any { return deref(s.LastSavedAt) }},
+}
+
+// DiffSubmissions 比较两版提交（含明细）的差异，用于"这次改了什么"。
+func DiffSubmissions(from, to *Submission, fromLines, toLines []Line) []FieldChange {
 	out := make([]FieldChange, 0, 8)
 	if from == nil && to == nil {
 		return out
 	}
 	if from == nil {
-		from = &FormRecord{}
+		from = &Submission{}
 	}
 	if to == nil {
-		to = &FormRecord{}
+		to = &Submission{}
 	}
 
-	out = append(out, diffStruct("record", 0, *from, *to,
-		"total_qty", "qualified_qty", "defect_qty", "pass_rate",
-		"is_complete", "missing_fields", "save_count",
-		"last_saved_by", "last_saved_at")...)
-
-	// 明细：按 seq 配对比较，长度不同也报出来
-	max := len(fromLines)
-	if len(toLines) > max {
-		max = len(toLines)
+	for _, f := range submissionScalarFields {
+		a, b := f.Get(*from), f.Get(*to)
+		if !reflect.DeepEqual(a, b) {
+			out = append(out, FieldChange{
+				Scope: "submission", Field: f.Field, Label: formfields.FieldLabel(f.Field),
+				From: a, To: b,
+			})
+		}
 	}
-	for i := 0; i < max; i++ {
+
+	// 明细：按位置配对比较
+	maxLen := len(fromLines)
+	if len(toLines) > maxLen {
+		maxLen = len(toLines)
+	}
+	for i := 0; i < maxLen; i++ {
 		idx := i + 1
-		if i >= len(fromLines) {
-			out = append(out, FieldChange{Scope: "line", Field: "lines", Label: "明细行", Index: idx,
-				From: nil, To: summarizeLine(toLines[i])})
-			continue
+		switch {
+		case i >= len(fromLines):
+			out = append(out, FieldChange{Scope: "line", Field: "lines", Label: "明细行",
+				Index: idx, From: nil, To: summarizeLine(toLines[i])})
+		case i >= len(toLines):
+			out = append(out, FieldChange{Scope: "line", Field: "lines", Label: "明细行",
+				Index: idx, From: summarizeLine(fromLines[i]), To: nil})
+		default:
+			out = append(out, diffLine(idx, fromLines[i], toLines[i])...)
 		}
-		if i >= len(toLines) {
-			out = append(out, FieldChange{Scope: "line", Field: "lines", Label: "明细行", Index: idx,
-				From: summarizeLine(fromLines[i]), To: nil})
-			continue
-		}
-		out = append(out, diffStruct("line", idx, fromLines[i], toLines[i],
-			"total_qty", "qualified_qty", "defect_qty",
-			"spot_concave", "spot_convex", "spot_both",
-			"scratch_concave", "scratch_convex", "scratch_both",
-			"dirt_concave", "dirt_convex", "dirt_both",
-			"hard_spot_concave", "hard_spot_convex", "hard_spot_both",
-			"debris_concave", "debris_convex", "debris_both",
-			"process_code", "process_text", "remark")...)
 	}
 	return out
 }
 
-func diffStruct(scope string, index int, from, to any, only ...string) []FieldChange {
-	fv := reflect.ValueOf(from)
-	tv := reflect.ValueOf(to)
-	ft := fv.Type()
-	changes := make([]FieldChange, 0, 4)
-
-	// 允许只比较指定字段（为空则比较全部可导出字段）
-	filter := map[string]bool{}
-	for _, f := range only {
-		filter[f] = true
-	}
-
-	for i := 0; i < ft.NumField(); i++ {
-		sf := ft.Field(i)
-		col := columnOf(sf)
-		if col == "" || col == "-" {
-			continue
-		}
-		if len(filter) > 0 && !filter[col] {
-			continue
-		}
-		if !sf.IsExported() {
-			continue
-		}
-		a := fv.Field(i).Interface()
-		b := tv.Field(i).Interface()
-		if !reflect.DeepEqual(a, b) {
-			changes = append(changes, FieldChange{
-				Scope: scope, Field: col, Label: Label(col), Index: index,
-				From: normalizeVal(a), To: normalizeVal(b),
+func diffLine(idx int, a, b Line) []FieldChange {
+	out := make([]FieldChange, 0, 4)
+	add := func(field string, from, to any) {
+		if !reflect.DeepEqual(from, to) {
+			out = append(out, FieldChange{
+				Scope: "line", Field: field, Label: formfields.FieldLabel(field),
+				Index: idx, From: from, To: to,
 			})
 		}
 	}
-	return changes
-}
+	add("total_qty", a.TotalQty, b.TotalQty)
+	add("qualified_qty", a.QualifiedQty, b.QualifiedQty)
+	add("defect_qty", a.DefectQty, b.DefectQty)
+	add("remark", deref(a.Remark), deref(b.Remark))
 
-func normalizeVal(v any) any {
-	switch t := v.(type) {
-	case *string:
-		if t == nil {
-			return nil
+	// 缺陷列：逐格比较（"未填"与 0 在库里都表现为缺少键，统一按 0 处理）
+	for _, d := range formfields.DefectGroups {
+		for _, s := range formfields.Surfaces {
+			av := a.Defects[d.Code][s]
+			bv := b.Defects[d.Code][s]
+			if av != bv {
+				add(formfields.DefectFieldName(d.Code, s), av, bv)
+			}
 		}
-		return *t
-	case *int:
-		if t == nil {
-			return nil
-		}
-		return *t
-	case *float64:
-		if t == nil {
-			return nil
-		}
-		return *t
-	case *bool:
-		if t == nil {
-			return nil
-		}
-		return *t
-	case []byte:
-		return string(t)
-	default:
-		return v
 	}
+	return out
 }
 
-func summarizeLine(l RecordLine) string {
-	return "总数 " + strconv.Itoa(l.TotalQty) +
-		" / 合格 " + strconv.Itoa(l.QualifiedQty) +
-		" / 不良 " + strconv.Itoa(l.DefectQty)
+func summarizeLine(l Line) string {
+	return "检验总数 " + itoa(l.TotalQty) + " / 合格品 " + itoa(l.QualifiedQty) +
+		" / 不合格品 " + itoa(l.DefectQty)
+}
+
+func deref(p *string) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func derefFloat(p *float64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func itoa(v int) string {
+	if v == 0 {
+		return "0"
+	}
+	neg := v < 0
+	if neg {
+		v = -v
+	}
+	var buf [20]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + v%10)
+		v /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }

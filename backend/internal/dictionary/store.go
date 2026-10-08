@@ -21,14 +21,15 @@ import (
 
 // 字典类别常量。
 const (
-	CategoryProcess       = "process"        // 工序，如 一次加硬
-	CategorySampleProject = "sample_project" // 项目，如 M1 / M2
-	CategorySampleModel   = "sample_model"   // 型号，如 VID1 RX / VID2
-	CategorySampleSpec    = "sample_spec"    // 规格，如 S1 / S2
-	CategorySampleSize    = "sample_size"    // 大小，如 MD / SM / LG
-	CategorySampleSide    = "sample_side"    // 左右，如 L / R
-	CategorySampleClass   = "sample_class"   // 结构类别（含义未确认，冗余维度）
-	CategoryUnit          = "unit"           // 单位
+	CategoryProcess       = "process"              // 工序，如 一次加硬（兼容旧命名）
+	CategoryInspectionOp  = "inspection_operation" // 检验工序（表单第一列的可选值）
+	CategorySampleProject = "sample_project"       // 项目，如 M1 / M2
+	CategorySampleModel   = "sample_model"         // 型号，如 VID1 RX / VID2
+	CategorySampleSpec    = "sample_spec"          // 规格，如 S1 / S2
+	CategorySampleSize    = "sample_size"          // 大小，如 MD / SM / LG
+	CategorySampleSide    = "sample_side"          // 左右，如 L / R
+	CategorySampleClass   = "sample_class"         // 结构类别（含义未确认，冗余维度）
+	CategoryUnit          = "unit"                 // 单位
 )
 
 // Item 对应数据库表 dict_items。

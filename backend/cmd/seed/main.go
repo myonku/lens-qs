@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/myonku/lens-qs-api/internal/dictionary"
+	"github.com/myonku/lens-qs-api/internal/operations"
 	"github.com/myonku/lens-qs-api/internal/pkg/config"
 	"github.com/myonku/lens-qs-api/internal/pkg/database"
 	"github.com/myonku/lens-qs-api/internal/store"
@@ -69,9 +70,14 @@ func seedDict(ctx context.Context, st *dictionary.Store) error {
 		sortNo   int
 	}
 	items := []item{
-		// 工序：纸质表单未印栏名，但必须是独立项目（B-2 / B-3）
+		// 工序（检验工序）：表单的第一列，也是"找到自己工序所在表单"的依据。
+		// 与 internal/operations 的注册表保持一致；新增工序可直接往这里加。
+		{dictionary.CategoryProcess, operations.Default, "一般检验", 0},
 		{dictionary.CategoryProcess, "一次加硬", "一次加硬", 10},
 		{dictionary.CategoryProcess, "二次加硬", "二次加硬", 20},
+		{dictionary.CategoryInspectionOp, operations.Default, "一般检验", 0},
+		{dictionary.CategoryInspectionOp, "一次加硬", "一次加硬", 10},
+		{dictionary.CategoryInspectionOp, "二次加硬", "二次加硬", 20},
 
 		// 样品信息：项目（M1/M2）必须可录入（B-7）
 		{dictionary.CategorySampleProject, "M1", "M1", 10},

@@ -98,20 +98,20 @@ func (h *Handler) cacheInfo(c *gin.Context) {
 		"tokens": res.Parsed.Tokens, "unknown_tokens": res.Parsed.Unknown})
 }
 
-// pending 列出需要人工核对的表单（解析不匹配或结构化字段缺失）。
+// pending 列出需要人工核对的表单（样品信息未拆解出「项目」等结构化项）。
 func (h *Handler) pending(c *gin.Context) {
-	forms, total, err := h.inspSvc.Store().ListForms(c.Request.Context(), inspection.FormFilter{
-		State:       "ACTIVE",
-		NeedsReview: true,
-		Limit:       100,
+	list, total, err := h.inspSvc.Store().ListSubmissions(c.Request.Context(), inspection.FormFilter{
+		State:            "ACTIVE",
+		SampleUnresolved: true,
+		Limit:            100,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	if forms == nil {
-		forms = []inspection.Form{}
+	if list == nil {
+		list = []inspection.Submission{}
 	}
-	httpx.OK(c, gin.H{"items": forms, "total": total,
-		"note": "这些表单的样品信息未能与参考清单匹配；不影响数据可用性，仅供人工核对"})
+	httpx.OK(c, gin.H{"items": list, "total": total,
+		"note": "这些表单的样品信息尚未拆解出「项目」等结构化项；不影响保存，仅供人工核对补录"})
 }

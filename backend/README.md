@@ -86,33 +86,57 @@ curl http://127.0.0.1:8080/healthz
 
 ---
 
-## 数据模型（三层）
+## 数据模型（两层）
+
+> **v0.7 重构**：业务方确认真实场景是"**每道工序各填一份表单，只是各工序填的内容不同**"，
+> 因此**一次表单提交 = 某工序填的那张表单**；原来的"一张表单 + 多笔工序记录"模型已废弃。
 
 ```
-Form（一张纸质表单，form_no 唯一）
- ├─ 样品信息：sample_raw（原始串，事实来源）+ 结构化字段（项目/型号/规格/大小/左右 + 冗余）
- └─ FormRecord（一笔 = 一次工序填写，(form_id, sequence_no) 唯一）
-      ├─ 工序 + 表单既有栏目（送检人/送检时间/检验人/检验时间/操机员/交接员）
-      ├─ 系统留痕（recorded_by / last_saved_by / save_count）
-      ├─ 汇总（total_qty / qualified_qty / defect_qty / pass_rate，服务端重算）
-      ├─ RecordLine（一行计数：检验总数、合格品、不良品、五类不良 × 三表面）
-      └─ RecordHistory（每次保存前的完整快照，追加写、不可改不可删）
+forms（表单提交，form_no 唯一）
+├─ operation_code      检验工序（表单第一列，也是检索/统计主维度）
+├─ 表头栏目：total_qty / qualified_qty / defect_qty / pass_rate
+├─ 样品信息：sample_raw（事实来源）+ 项目/型号/规格/大小/左右 + 单位
+├─ 系统留痕：submitted_by / submitted_at / save_count / last_saved_by / last_saved_at
+├─ 完成度：is_complete / missing_fields
+├─ form_lines（明细行，1..N）
+│  └─ 合计 3 列 + 不良缺陷明细 35 列 × 凹面/凸面/双面 = 105 个计数列
+└─ form_history（每次保存前的完整快照，只增不可改）
 ```
 
-**为什么不是"一表单号一条记录"**：纸质表单要在多个工序中使用，各工序的检验发生在不同时间、可能由不同人填写。拆成"笔"后，每笔只被本次填写的内容更新，历史信息不会被后续填写覆盖掉。
+**表单列目录**是字段的唯一事实来源，位于 `internal/formfields/formfields.go`：
+
+| 分组 | 数量 |
+|---|---|
+| 顶层栏目 | 5（检验工序 / 检验总数 / 合格品 / 不合格品 / 合格率） |
+| 不良缺陷明细 | **35 列**（点伤、划伤、法兰边点伤、…、法兰边凹痕） |
+| 展开后的计数子列 | **105**（每列 × 凹面 `concave` / 凸面 `convex` / 双面 `both`） |
+
+字段命名：`<缺陷编码>_<表面>`，例如 `prick_concave`、`flange_recess_both`。
+`form_lines` 的列清单与插入语句都由该目录生成，因此**新增一个缺陷列只需改目录 + 加一次迁移**。
+
+接口 `GET /api/form-fields` 与 `GET /api/form-templates` 会把列布局下发给前端。
+
+**工序表单模板**见 `internal/operations`：已登记 `GENERAL`（一般检验）、`一次加硬`、`二次加硬`；
+**未登记的工序同样合法**（按通用模板处理）。各工序"具体填哪些列"业务方尚未确定，
+因此当前**一律开放全部列、不设必填**。
 
 ### 保存语义
 
-**字段级合并（PATCH 语义）**：请求里出现的字段才更新，没出现的保持原值。
-这样"不同工序/不同人只填自己那部分"才能成立。
+**字段级合并**，且区分三态：
 
-| 内容 | 更新方式 |
+| 情况 | 语义 |
 |---|---|
-| 表单级字段（样品信息、单位） | 字段级合并 |
-| 笔级字段（工序、人员、时间、备注） | 字段级合并 |
-| 明细 `lines` | 提交则**整笔替换**（不做行级合并，避免"半行数据"） |
-| 每次保存 | 保存前内容写入 `record_history`，并写 `audit_logs` |
-| 汇总与完成度 | **服务端重算**，忽略调用方上报值 |
+| 键**不存在** | 不修改（保持原值） |
+| 键为 `null` | **清空**该字段（缺陷格子同样是清零该格子） |
+| 键有值 | 写入 |
+| `defects` 为 `{}` | 清空全部缺陷计数 |
+| `lines` 出现 | **整笔替换**明细（含 `[]` = 清空） |
+| 未知键 | **400**，并在 `details.hint` 提示 `GET /api/form-fields` |
+
+**表头与明细的优先级**：有明细时按明细行重算表头汇总，但**补丁里显式给出的表头栏目优先**
+（贴合纸质表单"表头是一行合计值"的填法）。合格率由 合格品/检验总数 计算（分母 0 → null）。
+
+每次保存前把**保存前的提交 + 明细**写入 `form_history`，并写 `audit_logs`；乐观锁用 `save_count`。
 
 ### 校验强度
 
@@ -121,12 +145,13 @@ Form（一张纸质表单，form_no 唯一）
 | 规则 | 说明 | 默认 | `enforce=strict` |
 |---|---|---|---|
 | V-1 | 合格 + 不良 = 总数 | 警告 | ⛔ 阻断 |
-| V-2 | 五类不良子项合计 = 不良品 | 警告 | 警告（**恒不阻断**，见需求 Q5） |
+| V-2 | 缺陷子项合计 = 不合格品 | 警告 | 警告（**恒不阻断**，见需求 Q5） |
 | V-3 | 子项边界 | 警告 | ⛔ 阻断 |
 | V-4 | 非负整数 | 警告 | ⛔ 阻断 |
 | V-6 | 送检时间 ≤ 检验时间 ≤ 现在 | 警告 | 警告 |
-| V-7 | `form_no` / `(form_id, sequence_no)` 唯一 | ⛔ 阻断 | ⛔ 阻断 |
+| V-7 | `form_no` 唯一 / `(form_id, seq)` 唯一 | ⛔ 阻断 | ⛔ 阻断 |
 | V-8 | 样品信息与参考清单不匹配 | 警告 + 待核对标记 | 警告（**不阻断**） |
+| V-11 | 未知字段名 | ⛔ 阻断（400） | ⛔ 阻断（400） |
 | V-9 | 结构化项（项目 M1/M2）缺失 | 警告 | 警告 |
 | V-10 | 表单既有栏目缺失 | 警告 + `missing_fields` | 警告 |
 
@@ -180,20 +205,26 @@ Form（一张纸质表单，form_no 唯一）
 | GET | `/sample/cache?sample_raw=` | 查看规范化键与 token 切分 |
 | GET | `/sample/pending` | 待核对清单 |
 
-### 表单与工序记录（核心）
+### 工序表单与字段目录
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/forms` | 表单列表（关键字/状态/待核对/日期/样品维度/单位） |
-| POST | `/forms` | 新建表单 |
-| GET | `/forms/:formNo` | **取表单及其全部笔与明细**（"接着填"用） |
-| PATCH | `/forms/:formNo` | 更新表单级字段（字段级合并） |
-| POST | `/forms/:formNo/records` | **新建一笔**；带 `records` 数组时批量提交多笔 |
-| PATCH | `/records/:id` | **保存/更新一笔**（增量填写主接口） |
-| GET | `/records/:id` | 取一笔（含明细） |
-| POST | `/records/:id/void` | 逻辑作废 + 原因 |
-| GET | `/records/:id/history` | 历史快照列表 |
-| GET | `/records/:id/history/diff?from=&to=` | 字段级 + 明细级差异（`to=current`） |
+| GET | `/form-templates` | **工序表单目录**：每个工序的模板 + 列布局 |
+| GET | `/form-templates/:code` | 某工序的模板与完整列布局 |
+| GET | `/form-fields` | **字段目录**：5 个顶层栏目 + 35 个缺陷列 × 3 表面（105 个子列） |
+
+### 表单提交（核心）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/forms` | 列表（`keyword`/`state`/`operation_code`/样品各维度/`unit`/`from`/`to`/`incomplete` + 分页） |
+| POST | `/forms` | **新建提交**；`form_no` 已存在则按其字段级合并更新（返回 201） |
+| POST | `/forms/batch` | **批量提交**多张表单（`forms` 数组，整批原子） |
+| GET | `/forms/:id` | 取提交详情（含明细与全部缺陷计数；也可用表单号查询） |
+| PATCH | `/forms/:id` | **更新提交**（字段级合并；`lines` 提交则整笔替换） |
+| POST | `/forms/:id/void` | 逻辑作废 + 原因 |
+| GET | `/forms/:id/history` | 历史快照列表（按 `save_count` 倒序） |
+| GET | `/forms/:id/history/diff?from=&to=` | 字段级 + 明细级差异（`to=current`） |
 | GET | `/audit-logs?entity=&entity_id=&limit=` | 操作日志 |
 
 ### 汇总统计
@@ -201,25 +232,41 @@ Form（一张纸质表单，form_no 唯一）
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/stats/dimensions` | 可用分组维度 |
-| GET | `/stats/summary?group_by=sample_spec,sample_size` | **按样品信息各子项分组汇总** |
-| GET | `/stats/defects` | 不良类别 × 表面分布 |
-| GET | `/stats/workload?by=inspected_by\|recorded_by\|last_saved_by` | 工作量 |
+| GET | `/stats/summary?group_by=operation_code,sample_spec` | 按维度分组汇总 |
+| GET | `/stats/defects` | **不良缺陷分布**：35 列 × 3 表面的合计 |
+| GET | `/stats/workload?by=submitted_by\|last_saved_by` | 工作量 |
 | GET | `/stats/incomplete-forms` | 未完成表单清单 |
 
-分组维度：`sample_project` `sample_model` `sample_spec` `sample_size` `sample_side` `sample_class` `sample_raw` `form_no` `process` `unit` `inspected_by` `submitted_by` `machine_operator` `handover_by` `day` `month`。
+分组维度（14 个）：`operation_code` `operation_text` `sample_project` `sample_model` `sample_spec`
+`sample_size` `sample_side` `sample_raw` `form_no` `unit` `submitted_by` `last_saved_by` `day` `month`。
 
 ### 保存请求示例
 
 ```jsonc
-// POST /api/forms/M-260908-01/records
+// POST /api/forms   （新建；form_no 已存在则按其字段级合并更新）
 {
+  "form_no": "QS-260930-001",     // 可选：不给则自动生成 {YYMMDD}-{流水}
+  "operation_code": "一次加硬",    // 检验工序（表单第一列）
   "enforce": "warn",              // warn（默认，不阻断）| strict（自相矛盾的数据拦下）
-  "mode": "merge",                // merge（默认，字段级合并）| replace（整体替换）
   "expected_save_count": 1,       // 可选：乐观锁，不一致返回 409
-  "reason": "补填二次加硬",         // 可选：写入历史与操作日志
-  "form":   { "sample_raw": "M2 S2 ND2 SMR", "sample_project": "M2" },  // 只提交要改的
-  "record": { "process_code": "一次加硬", "inspected_by": "张赛赛" },
-  "lines":  [ { "total_qty": 100, "qualified_qty": 100 } ]              // 提交即整笔替换
+  "client_request_id": "uuid",    // 可选：幂等键（也可用请求头 X-Idempotency-Key）
+  "reason": "补填脏污",            // 可选：写入历史与操作日志
+  "form": {                       // 字段补丁：只提交要改的字段
+    "sample_raw": "M2 S2 SM R VID2",
+    "sample_project": "M2",
+    "unit_text": "一厂",
+    "lines": [                    // 提交即整笔替换明细
+      {
+        "total_qty": 100, "qualified_qty": 96, "defect_qty": 4,
+        "defects": {              // 只改给出的格子；给 {} 则清空
+          "prick":            { "concave": 1, "convex": 1 },
+          "scratch":          { "both": 1 },
+          "flange_recess":    { "concave": 1 },
+          "hardening_bubble": { "convex": 1 }
+        }
+      }
+    ]
+  }
 }
 ```
 
@@ -229,15 +276,20 @@ Form（一张纸质表单，form_no 唯一）
 {
   "code": "ok",
   "data": {
-    "action": "create_record",
-    "record": { "sequence_no": 1, "save_count": 1, "is_complete": false,
-                "total_qty": 100, "qualified_qty": 100, "pass_rate": 100 },
-    "issues":   [ { "rule": "V-10", "level": "warning", "field": "submitted_by",
-                    "message": "表单既有栏目「送检人」尚未填写" } ],
+    "action": "create_form",      // create_form | save_form
+    "submission": {
+      "form_no": "QS-260930-001", "operation_code": "一次加硬", "save_count": 1,
+      "total_qty": 100, "qualified_qty": 96, "defect_qty": 4, "pass_rate": 96,
+      "is_complete": true, "missing_fields": [],
+      "lines": [ { "seq": 1, "total_qty": 100, "qualified_qty": 96, "defect_qty": 4,
+                   "defects": { "prick": { "concave": 1, "convex": 1 } } } ]
+    },
+    "issues":   [ { "rule": "V-10", "level": "warning", "field": "unit_id",
+                    "message": "「unit_id」尚未填写" } ],
     "warnings": [ /* 同上 */ ],
     "errors":   [],
-    "missing_fields": ["submitted_by", "submitted_at", "machine_operator", "handover_by"],
-    "is_complete": false
+    "missing_fields": [],
+    "is_complete": true
   }
 }
 ```
@@ -304,7 +356,7 @@ pwsh -File scripts/e2e2.ps1   # 汇总 / 不良分布 / 未完成 / 工作量 / 
 
 | 决定 | 理由 |
 |---|---|
-| 除 `form_no` 与 `(form_id, sequence_no)` 唯一外**不做任何强制** | 需求 F-1~F-4：生产流程繁杂且无法确认，系统不得用流程约束绑住现场 |
+| 除 `form_no` 与 `(form_id, seq)` 唯一外**不做任何强制** | 需求 F-1~F-4：生产流程繁杂且无法确认，系统不得用流程约束绑住现场 |
 | 校验**默认只警告**，`strict` 才阻断 | 需求 F-7；否则"分次填写"根本无法落地 |
 | 工序字段**在笔与行上都保留** | 需求 F-6：多工序落库形态无法确认，两种现实都要能表达 |
 | 原始串**永不被解析或人工修正改写** | 需求 B-6：以表单上的原始输入为准，参考清单只是参考 |

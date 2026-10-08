@@ -100,9 +100,9 @@
 ┌────────────────────────────▼─────────────────────────────────────────┐
 │  SQLite（开发 / 单机）或 PostgreSQL 16（生产）                          │
 │  表：users / sessions / audit_logs                                    │
-│      forms（form_no 唯一）                                            │
-│      form_records（(form_id, sequence_no) 唯一）                       │
-│      record_lines / record_history（保存快照，追加写）                  │
+│      forms（一次表单提交 = 某工序填的表单；form_no 唯一）               │
+│      form_lines（明细行：105 个缺陷计数子列）                           │
+│      form_history（保存快照，追加写）                                   │
 │      sample_parse_cache / sample_drawings / dict_items / units        │
 │      schema_migrations（迁移版本）                                     │
 └──────────────────────────────────────────────────────────────────────┘
@@ -171,27 +171,48 @@ users ──< sessions
   │
   ├──< audit_logs
 
-forms（form_no 唯一；样品信息 + 单位 + 创建信息）
-  ├──< form_records（(form_id, sequence_no) 唯一；每笔 = 一次工序填写）
-  │        ├──< record_lines（该笔的计数明细行）
-  │        └──< record_history（该笔每次保存前的快照，追加写）
-  └──> units
+forms（**一次表单提交 = 某工序填的那张表单**，form_no 唯一）
+  ├──< form_lines（明细行：检验总数/合格品/不合格品 + 35 个缺陷列 × 3 表面 = 105 个计数）
+  └──< form_history（每次保存前的完整快照，追加写）
 
 sample_parse_cache     sample_drawings（参考部件号，仅最佳努力匹配） ──> dict_items（各维度）
 idempotency_requests（写接口幂等：按 user_id + 幂等键回放首次响应，TTL 默认 24h）
-dict_items（工序 / 单位 / 样品段 / 不良类别文案）
+dict_items（检验工序 / 单位 / 样品段 / 缺陷类别文案）
 ```
 
-三层结构的含义：
+两层结构的含义：
 
 | 层 | 表 | 对应纸质概念 | 数量关系 |
 |---|---|---|---|
-| 表单 | `forms` | 一张纸质表单 | 1 |
-| 笔 | `form_records` | 该表单上的**一次工序检验填写**（同一张表可能被多个工序填过） | 0..N |
-| 行 | `record_lines` | 一笔里的**一行计数**（检验总数/合格品/不良品/15 个不良子项） | 1..N（默认 1） |
+| 提交 | `forms` | **某工序填的那张表单**（含表头栏目与样品信息） | 1 |
+| 行 | `form_lines` | 该表单表格里的**一行计数**（含全部不良缺陷列） | 1..N（默认 1） |
 
-> 与 v0.2 的差异：删除 `roles` / `permissions` / `role_permissions` / `user_roles`（需求 B-14 权限放开）；
-> `inspection_docs` 拆分为 `forms` + `form_records`；`doc_history` 改为按笔的 `record_history`。
+> **v0.7 重构说明（重要）**：业务方确认真实场景是"**每道工序各填一份表单，只是各工序填的内容不同**"，
+> 而不是"一张表单下有多笔工序记录"。因此把旧的三层（`forms` + `form_records` + `record_lines`）
+> 收敛为两层：**提交**（= 一次工序填写）+ **明细行**；工序从"笔"上移到**提交**上，并成为列表与统计的主维度。
+> 迁移见 `backend/migrations/*/0003_form_submission.*.sql`。
+
+### 4.1.1 表单列目录（字段的唯一事实来源）
+
+列清单不硬编码在业务逻辑里，而是集中在 `backend/internal/formfields/formfields.go`，
+并通过 `GET /api/form-fields` 与 `GET /api/form-templates` 下发给前端：
+
+| 分组 | 数量 | 说明 |
+|---|---|---|
+| 顶层栏目 | 5 | 检验工序、检验总数、合格品、不合格品、合格率（合格率由服务端计算） |
+| 不良缺陷明细 | 35 列 | 每列含 **凹面 `concave` / 凸面 `convex` / 双面 `both`** 三个计数 → 共 105 个子列 |
+
+字段命名：`<缺陷编码>_<表面>`，例如 `prick_concave`（点伤-凹面）、`flange_recess_both`（法兰边凹痕-双面）。
+落库列名与接口字段名完全一致，因此 `form_lines` 的列清单也由该目录生成（新增列只需改目录 + 加一次迁移）。
+
+### 4.1.2 工序表单模板
+
+`backend/internal/operations/operations.go` 维护"工序 → 表单"的注册表：
+
+- 已登记：`GENERAL`（一般检验）、`一次加硬`、`二次加硬`；
+- **未登记的工序同样合法**（F-4）：按通用模板处理，开放全部列，不报错；
+- 各工序"具体填哪些列"业务方尚未确定 → 当前**一律开放全部列、不设必填**；
+- 将来确定后可为某工序填 `allowed_fields` 收窄，不需要改业务逻辑。
 
 ### 4.2 表定义
 
@@ -297,173 +318,51 @@ model SampleParseCache {           // "原始串 → 结构化结果"缓存，�
 }
 ```
 
-#### 4.2.3 表单 / 笔 / 行（核心）
+#### 4.2.3 表单提交 / 明细行 / 历史（核心）
 
-**三层结构**：`Form`（表单，对应一张纸质表单）→ `FormRecord`（笔，对应该表单的一次工序检验填写）→ `RecordLine`（行，对应一笔里的计数行）。
+> **v0.7 起**：一次提交 = 某工序填的那张表单；工序在提交上；明细行的缺陷列由字段目录生成。
+> 权威建表脚本见 `backend/migrations/{sqlite,postgres}/0003_form_submission.*.sql`；
+> Go 结构体见 `backend/internal/inspection/models.go`。
 
-```prisma
-model Form {                                       // 一张纸质表单
-  id            String   @id @default(uuid())
-  formNo        String   @unique                 // M-260908-01 —— 表单唯一键
-  unitId        String?                          // 单位（表单既有栏目；也存原文）
-  unitText      String?                          // 单位原文（字典外的自由文本）
+**`forms`（表单提交）关键列**
 
-  // ── 样品信息：原始轨（事实来源，任何解析/修正都不改写）──
-  sampleRaw     String                            // 逐字保留，如 "M2 S2 ND2 SMR"
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` / `form_no` | text | 主键 / 表单号（唯一） |
+| `operation_code` / `operation_text` | text | **检验工序**（表单第一列）；原文另存 |
+| `sample_raw` | text | 样品信息原始串（事实来源，永不被改写） |
+| `sample_project` / `sample_model` / `sample_spec` / `sample_size` / `sample_side` | text null | 样品结构化字段（用于查询与汇总） |
+| `unit_id` / `unit_text` | text null | 单位（字典 id 或原文） |
+| `submitted_by` / `submitted_at` | text | **实际录入的系统用户**与时间 |
+| `last_saved_by` / `last_saved_at` / `save_count` | text / int | 最近保存人与次数（乐观锁依据） |
+| `total_qty` / `qualified_qty` / `defect_qty` | int | 表头栏目（有明细时按明细重算，显式给出则优先） |
+| `pass_rate` | real null | 合格率（服务端计算） |
+| `is_complete` / `missing_fields` | int / text | 完成度与缺失项清单 |
+| `state` / `voided_at` / `void_reason` / `remark` | | 状态（ACTIVE/VOID）与作废信息 |
 
-  // ── 样品信息：结构化轨（5 核心 + 冗余 + 匹配）────────────────
-  sampleProject String?                           // M1 / M2 —— 必须可录入（B-7）
-  sampleModel   String?                           // VID1 Rx / VID2
-  sampleSpec    String?                           // S1 / S2
-  sampleSize    String?                           // MD / SM / LG
-  sampleSide    String?                           // L / R
-  sampleClass   String?                           // 【冗余】MONOC / BINOC / MONOC_AND_BINOC（含义未确认）
-  sampleIsRx    Boolean?                          // 【冗余】型号含 Rx/RX
-  sampleDrawingId String?                         // 【冗余】匹配到的参考部件号（仅供参考）
-  sampleUnmatchedReason String?                   // raw_only | no_drawing | partial
-  sampleParsedBy  String   @default("auto")       // auto | manual | cache
-  sampleConfidence Float   @default(0)
-  sampleVerified  Boolean  @default(false)        // 人工确认过
-  needsReview     Boolean  @default(false)        // 解析失败/不匹配 → 待核对清单（不阻断保存）
-  unknownTokens   Json?                           // 未能识别的 token（便于字典补录）
+索引：`form_no` 唯一；另按 `state+created_at`、`operation_code+submitted_at`、
+`sample_spec+sample_size+sample_side+sample_model`、`sample_project`、`unit_id`、`submitted_by`、`state+is_complete` 建索引。
 
-  state         String   @default("ACTIVE")       // ACTIVE | VOID
-  voidedAt      DateTime?
-  voidReason    String?
+**`form_lines`（明细行）**
 
-  createdBy     String                            // 表单创建者（永不改变）
-  createdAt     DateTime @default(now())
-  lastSavedBy   String?
-  lastSavedAt   DateTime?
+| 分组 | 列 |
+|---|---|
+| 行标识 | `id` / `form_id` / `seq`（`(form_id, seq)` 唯一） |
+| 合计 | `total_qty` / `qualified_qty` / `defect_qty` |
+| **不良缺陷明细** | **35 列 × 3 表面 = 105 个整数列**，列名 = `<缺陷编码>_<concave|convex|both>` |
+| 其它 | `remark` / `created_at` / `updated_at` |
 
-  records       FormRecord[]
+> 这 105 个列由 `internal/formfields` 生成：`lineColumns` 会自动包含目录里的每一列，
+> 插入语句的列清单与占位符也是按目录拼的，因此**新增缺陷列只需改目录 + 加一次迁移**，业务代码不动。
 
-  @@index([state, createdAt])
-  @@index([sampleSpec, sampleSize, sampleSide, sampleModel])   // 层级检索
-  @@index([sampleProject])
-  @@index([needsReview, state])
-  @@index([unitId])
-}
+**`form_history`（历史快照）**
 
-model FormRecord {                                 // 一笔 = 该表单的一次工序检验填写
-  id            String   @id @default(uuid())
-  formId        String
-  sequenceNo    Int                                 // 第几笔，从 1 开始；(formId, sequenceNo) 唯一
-
-  // ── 工序（纸质表单未印栏名，必须显式）────────────────
-  processCode   String?                             // 如 "一次加硬"（字典 process）
-  processText   String?                             // 工序原文/补充
-
-  // ── 表单既有栏目（B-11：全部必须纳入）────────────────
-  submittedBy     String?                           // 送检人（表单上写的）
-  submittedAt     DateTime?                         // 送检时间
-  inspectedBy     String?                           // 检验人（表单上写的）
-  inspectedAt     DateTime?                         // 检验时间
-  machineOperator String?                           // 操机员
-  handoverBy      String?                           // 交接员
-
-  // ── 系统留痕：谁把它录进系统（区别于表单上的检验人，见 Q18）──
-  recordedBy    String                              // 首次录入本笔的用户
-  recordedAt    DateTime @default(now())            // 首次录入时间
-
-  // ── 保存与完整性 ─────────────────────────────────
-  saveCount     Int      @default(1)                // 本笔被保存的次数
-  lastSavedBy   String?                             // 最近一次保存的人
-  lastSavedAt   DateTime?                           // 最近一次保存的时间
-  isComplete    Boolean  @default(false)            // 依据缺失项计算
-  missingFields Json?                               // 缺失字段清单（V-10 等）
-  remark        String?
-
-  // ── 汇总（由本笔明细行在服务端重算落库）──────────────
-  totalQty      Int      @default(0)
-  qualifiedQty  Int      @default(0)
-  defectQty     Int      @default(0)
-  passRate      Decimal? @db.Decimal(6, 3)          // 0~100
-
-  state         String   @default("ACTIVE")         // ACTIVE | VOID
-  voidedAt      DateTime?
-  voidReason    String?
-
-  form          Form     @relation(fields: [formId], references: [id], onDelete: Cascade)
-  lines         RecordLine[]
-  history       RecordHistory[]
-
-  @@unique([formId, sequenceNo])
-  @@index([formId])
-  @@index([processCode, inspectedAt])
-  @@index([inspectedBy, inspectedAt])
-  @@index([state, isComplete])
-  @@index([lastSavedAt])
-}
-
-model RecordLine {                                 // 一笔里的一行计数（默认 1 行）
-  id            String @id @default(uuid())
-  recordId      String
-  seq           Int                                // 行序，从 1 开始
-
-  totalQty     Int @default(0)                     // 检验总数
-  qualifiedQty Int @default(0)                     // 合格品
-  defectQty    Int @default(0)                     // 不良品
-
-  // 点伤
-  spotConcave Int @default(0)  spotConvex Int @default(0)  spotBoth Int @default(0)
-  // 划伤
-  scratchConcave Int @default(0) scratchConvex Int @default(0) scratchBoth Int @default(0)
-  // 脏污
-  dirtConcave Int @default(0)  dirtConvex Int @default(0)  dirtBoth Int @default(0)
-  // 加硬点
-  hardSpotConcave Int @default(0) hardSpotConvex Int @default(0) hardSpotBoth Int @default(0)
-  // 垃圾点
-  debrisConcave Int @default(0) debrisConvex Int @default(0) debrisBoth Int @default(0)
-
-  // 行级工序（【待确认 Q19】若现实是"同一张表上每工序填一行"，工序落在行上）
-  processCode   String?
-  processText   String?
-  remark        String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  record        FormRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
-  defects       LineDefect[]
-  @@unique([recordId, seq])
-  @@index([recordId])
-}
-
-model RecordHistory {                              // 保存快照：每次保存前的内容，追加写、不可改不可删
-  id            String   @id @default(uuid())
-  recordId      String
-  formId        String                             // 冗余，便于按表单查询历史
-  saveCount     Int                                // 该快照对应的保存次数（即被取代的那一版）
-  formSnapshot  Json                               // 保存前的表单级字段（样品信息、单位等）
-  recordSnapshot Json                              // 保存前的笔级字段（工序、人员、时间、汇总、完整性）
-  linesSnapshot Json                               // 保存前的明细行数组
-  savedBy       String                             // 这一版是谁保存的
-  savedAt       DateTime                           // 这一版的保存时间
-  changedBy     String                             // 谁做了本次修改
-  changedAt     DateTime @default(now())
-  reason        String?                            // 变更原因（可选）
-  @@index([recordId, saveCount])
-  @@index([formId, changedAt])
-}
-```
-
-**关于"不良类别可扩展"的说明（D-5）**
-- 本期五类不良（点伤/划伤/脏污/加硬点/垃圾点）以**固定列**实现：校验、统计、导出最直观，性能最好。
-- 若业务方预期不良类别会频繁新增，则切换为**纵向模型**：
-  `record_line_defects(line_id, defect_code, surface, qty)` + `defect_code` 走字典。
-  切换成本评估：模型变更 + 统计 SQL 改写，约 1~2 人日；建议**在 M2 结束前定稿**，避免上线后迁移。
-- 无论哪种模型，**列定义（类别 × 表面）都由字典驱动**，接口返回列定义，新增类别不需改客户端代码。
-
-```prisma
-model LineDefect {                                 // 纵向模型预留（可选启用）
-  id        String @id @default(uuid())
-  lineId    String
-  defectCode String                                // spot | scratch | dirt | hard_spot | debris
-  surface    String                                // concave | convex | both
-  qty        Int    @default(0)
-  @@unique([lineId, defectCode, surface])
-}
-```
+| 列 | 说明 |
+|---|---|
+| `form_id` / `save_count` | 所属提交 / 该快照对应的保存次数（被取代的那一版） |
+| `submission_snapshot` / `lines_snapshot` | 保存前的提交与明细（JSON 文本） |
+| `saved_by` / `saved_at` | 那一版是谁在何时保存的 |
+| `changed_by` / `changed_at` / `reason` | 本次是谁、何时、为何改的 |
 
 #### 4.2.4 操作日志
 
@@ -532,7 +431,7 @@ model AuditLog {
    ├─ POST /forms                       新建表单（formNo + 样品信息原始串 + 单位）
    ├─ POST /sample/parse                解析原始串并与参考部件号比对（可选）
    └─ POST /forms/:formNo/records       逐笔提交，每笔带 mode=full
-        或 一次请求提交多笔（见 §6.4 的批量约定）
+        或 一次请求提交多张表单（见 §6.4 的批量约定）
         服务端：强校验（V-1/V-3/V-4 为 error）；不完整则 422 并返回问题清单
 
 ③ 全部录入完成后：
@@ -544,7 +443,7 @@ model AuditLog {
 
 | 保证 | 实现 |
 |---|---|
-| 数据形态一致 | 都落到同一套 `forms` / `form_records` / `record_lines` |
+| 数据形态一致 | 都落到同一套 `forms` / `form_lines` |
 | 历史一致 | 两种模式每次保存都写 `RecordHistory` |
 | 汇总一致 | 都走服务端重算 |
 | 差异只在 | 校验强度（`enforce`）与调用节奏，**不影响最终数据结构** |
@@ -624,8 +523,8 @@ missingFields(record, lines): string[]         // V-10 缺失项（驱动 isComp
 | 规则 | 完整模式（`mode=full`） | 增量模式（`mode=incremental`） |
 |---|---|---|
 | V-1 合格+不良=总数 | **error**（阻断） | **warning** |
-| V-2 Σ15子项 = 不良品 | warning（业务方已确认存在重复计数 B-12，登记 `【待定】`） | warning |
-| V-3 子项边界（各类别三子项之和 ≤ 不良品；子项 ≤ 总数） | error | warning |
+| V-2 缺陷子项合计 = 不合格品 | warning（业务方已确认存在重复计数，登记 `【待定】`） | warning |
+| V-3 子项边界（某缺陷列三表面合计 ≤ 不合格品；单子列 ≤ 检验总数） | error | warning |
 | V-4 非负整数；总数 > 0 | error | warning（仅校验非负整数） |
 | V-5 良率派生 | 计算（服务端重算） | 计算（服务端重算） |
 | V-6 送检时间 ≤ 检验时间 ≤ 当前时间 | warning（表单上的时间常为人工补记） | warning |
@@ -688,55 +587,51 @@ missingFields(record, lines): string[]         // V-10 缺失项（驱动 isComp
 | 递增 | `record.saveCount += 1` |
 | 并发 | 乐观锁：请求可携带 `expectedSaveCount`（或 `If-Match`）；不一致 → `409` + 服务端当前内容 + 差异 |
 | 幂等 | 请求可携带 `clientRequestId`；服务端记录并去重，防弱网重试造成重复保存 |
-| 汇总 | 服务端按笔重算 `totalQty/qualifiedQty/defectQty/passRate`，忽略客户端上报值 |
+| 汇总 | 服务端按明细行重算 `total_qty/qualified_qty/defect_qty`，并计算 `pass_rate`；**补丁里显式给出的表头栏目优先** |
 | 完整性 | 服务端重算 `isComplete` / `missingFields`（V-9、V-10） |
 | 作废 | `state='VOID'` + `voidReason`；数据与历史保留；统计默认排除 |
 
 **服务端事务伪代码**
 
 ```
-saveRecord(input, actor, mode):
+saveForm(input, actor, enforce):
   tx:
-    form = SELECT * FROM forms WHERE form_no = :formNo FOR UPDATE
-    if form == null:
-        validateForm(input.form)                       # V-7/V-8/V-9
-        form = INSERT INTO forms(...)                  # createdBy = actor
+    sub = SELECT * FROM forms WHERE form_no = :formNo FOR UPDATE   # 也支持按 id 定位
+    if sub == null:
+        sub = INSERT INTO forms(...)                # 首次提交：save_count = 1
+        action = 'create_form'
     else:
-        mergeInto(form, input.form)                    # 字段级合并（只改提交的字段）
-        recomputeFormParseFlags(form)
-
-    if input.sequenceNo == null:                       # 新建一笔
-        seq = nextSequenceNo(form)                     # 事务内 max+1
-        record = INSERT INTO form_records(form_id, sequence_no=seq,
-                     recorded_by=actor, save_count=1, ...)
-        action = 'create'
-    else:
-        record = SELECT * FROM form_records
-                 WHERE form_id=form.id AND sequence_no=input.sequenceNo FOR UPDATE
-        if record == null: 404
-        assert !input.expectedSaveCount || input.expectedSaveCount == record.saveCount   # 否则 409
-        INSERT INTO record_history(record_id, form_id, save_count=record.saveCount,
-               form_snapshot=rowToJson(form), record_snapshot=rowToJson(record),
-               lines_snapshot=loadLines(record),
-               saved_by=record.lastSavedBy, saved_at=record.lastSavedAt,
+        assert !input.expected_save_count || input.expected_save_count == sub.save_count   # 否则 409
+        INSERT INTO form_history(form_id, save_count=sub.save_count,
+               submission_snapshot=rowToJson(sub), lines_snapshot=loadLines(sub),  # 保存前的内容
+               saved_by=sub.last_saved_by, saved_at=sub.last_saved_at,
                changed_by=actor.id, reason=input.reason)
-        mergeInto(record, input.record)                # 字段级合并（只改提交的字段）
-        record.saveCount += 1
-        action = 'save'
+        action = 'save_form'
 
-    if input.lines != null:                            # 明细提交则整笔替换
-        DELETE FROM record_lines WHERE record_id = record.id
-        INSERT record_lines(...)
+    # 字段级合并（三态：键不存在=不改 / null=清空 / 有值=写入）
+    applyPatch(sub, input.form)                    # 表头栏目、样品信息、单位、备注
+    sub.save_count += 1
+    sub.submitted_by ??= actor.id; sub.submitted_at ??= now()
+    sub.last_saved_by = actor.id;  sub.last_saved_at = now()
 
-    issues = validate(form, record, lines, mode)       # §5.3；mode=full 时 V-1/V-3/V-4 为 error
+    if input.form.lines != null:                   # 明细提交则整笔替换
+        DELETE FROM form_lines WHERE form_id = sub.id
+        INSERT form_lines(...)                     # 105 个缺陷列由字段目录生成
+
+    # 汇总：有明细按明细重算；但补丁里**显式给出**的表头栏目优先
+    if len(lines) > 0:
+        total, qualified, defect = sum(lines)
+        if !patch.total_qty.given:     sub.total_qty = total
+        if !patch.qualified_qty.given: sub.qualified_qty = qualified
+        if !patch.defect_qty.given:    sub.defect_qty = defect
+    if !patch.pass_rate.given:  sub.pass_rate = qualified / total * 100   # 分母为 0 时为 null
+
+    issues = validate(sub, lines, enforce)         # §5.3；strict 时 V-1/V-3/V-4 为 error
     if issues.hasError: rollback + 422(issues)
-    recomputeTotals(record)                            # 服务端重算
-    record.isComplete, record.missingFields = completeness(record, lines)
-    record.lastSavedBy = actor.id; record.lastSavedAt = now()
-    form.lastSavedBy = actor.id;    form.lastSavedAt = now()
-    INSERT audit_logs(action, entity='form_record', entity_id=record.id,
-                      before, after, actor, ip, ua)
-  return { form, record, issues, summary }
+    sub.is_complete, sub.missing_fields = completeness(sub, lines)
+    INSERT/UPDATE forms(...)
+    INSERT audit_logs(action, entity='form', entity_id=sub.id, before, after, actor, ip, ua)
+  return { action, submission, issues, warnings, errors, missing_fields, is_complete }
 ```
 
 **历史与差异**
@@ -750,7 +645,7 @@ saveRecord(input, actor, mode):
 - 内容：操作人（id + 当时姓名）、动作、对象、变更前后 JSON、IP、UA、时间。
 - 与 `RecordHistory` 的分工：`RecordHistory` 面向**业务回看**（"这一笔上次填的是什么"），`AuditLog` 面向**系统留痕**（"谁在何时动了什么"）。
 - 脱敏：`passwordHash`、token 等永不入日志。
-- 只读性：应用账号对 `audit_logs`、`record_history` 只有 INSERT/SELECT 权限（无 UPDATE/DELETE），DB 层保证不可篡改。
+- 只读性：应用账号对 `audit_logs`、`form_history` 只有 INSERT/SELECT 权限（无 UPDATE/DELETE），DB 层保证不可篡改。
 - 保留期：默认 3 年（Q12）。
 
 ### 5.8 弱网与幂等
@@ -769,7 +664,7 @@ saveRecord(input, actor, mode):
 | 场景 | 需要的接口能力 |
 |---|---|
 | 工序现场分次填写 | 按 `formNo` 取表单 + 已有笔列表；新建/更新一笔（增量）；返回即时校验与缺失项 |
-| 次日集中录入 | 一次提交"表单 + 多笔 + 每笔明细"（完整模式）；或按笔逐笔录入（同接口） |
+| 次日集中录入 | 多张表单一次提交（`POST /forms/batch`，整批原子）；也可逐张提交（同接口） |
 | 查询与核对 | 按多条件检索、返回表单及全部笔、返回每笔完成度 |
 | 追溯 | 查询某笔的全部历史快照与字段级差异 |
 | 统计与导出 | 按时间/工序/样品维度聚合；导出 Excel/CSV |
@@ -780,7 +675,8 @@ saveRecord(input, actor, mode):
 
 ## 6. 接口设计（REST）
 
-> **本节已按实际实现对齐**（v0.6）。字段命名一律 **snake_case**（JSON tag 与数据库列名一致）。
+> **本节已按实际实现对齐**（v0.7）。字段命名一律 **snake_case**（JSON tag 与数据库列名一致）。
+> 逐接口的请求/响应示例、错误码表、字段中文名对照见 [`docs/api.md`](api.md)（面向前端对接，更详细）。
 > 逐接口的请求/响应示例、错误码表、字段中文名对照见 [`docs/api.md`](api.md)（面向前端对接，更详细）。
 
 统一前缀 `/api`，响应 `{ code, message, data }`；错误使用 HTTP 语义码。
@@ -823,131 +719,143 @@ saveRecord(input, actor, mode):
 | GET | `/api/sample/pending` | 待核对清单（`needs_review=true`） | 登录 |
 | GET | `/api/forms/:formNo/sample/pending` | 某表单的样品信息提示 | 登录 |
 
-### 6.4 表单与工序记录（核心）
+### 6.4 工序表单与字段目录
+
 | 方法 | 路径 | 说明 | 限制 |
 |---|---|---|---|
-| GET | `/api/forms` | 表单列表（`keyword` / `state` / `needs_review` / `from` / `to` / `sample_project` / `sample_model` / `sample_spec` / `sample_size` / `sample_side` / `unit` + 分页） | 登录 |
-| POST | `/api/forms` | 新建表单（可只带 `form_no` + 样品信息），返回 **201** | 登录 |
-| GET | `/api/forms/:formNo` | **取表单及其全部笔与明细**（现场"接着填"与集中录入都靠它） | 登录 |
-| PATCH | `/api/forms/:formNo` | 更新表单级字段（**字段级合并**），返回 **200** | 登录 |
-| POST | `/api/forms/:formNo/records` | **新建一笔**；带 `records` 数组时批量提交多笔（整批原子） | 登录 |
-| GET | `/api/records/:id` | 取一笔的完整内容（含明细） | 登录 |
-| PATCH | `/api/records/:id` | **保存/更新一笔**（字段级合并；明细提交则整笔替换）—— 分次填写的主接口 | 登录 |
-| POST | `/api/records/:id/void` | 逻辑作废 + 原因 | 登录 |
-| GET | `/api/records/:id/history` | 该笔的全部历史快照（按 `save_count` 倒序） | 登录 |
-| GET | `/api/records/:id/history/diff?from=&to=` | 两版之间的字段级 + 明细级差异（`to=current` 表示当前） | 登录 |
+| GET | `/api/form-templates` | **工序表单目录**：每个工序对应的模板 + 列布局（前端"找到自己工序的表单"） | 登录 |
+| GET | `/api/form-templates/:code` | 取某个工序的模板与完整列布局 | 登录 |
+| GET | `/api/form-fields` | **字段目录**：5 个顶层栏目 + 35 个缺陷列 × 3 表面（105 个子列）+ 中文名 | 登录 |
+
+### 6.5 表单提交（核心）
+
+| 方法 | 路径 | 说明 | 限制 |
+|---|---|---|---|
+| GET | `/api/forms` | 列表（`keyword` / `state` / `operation_code` / 样品各维度 / `unit` / `from` / `to` / `incomplete` + 分页） | 登录 |
+| POST | `/api/forms` | **新建提交**；`form_no` 已存在则按其**字段级合并**更新。返回 **201** | 登录 |
+| POST | `/api/forms/batch` | **批量提交**多张（`forms` 数组，**整批原子**） | 登录 |
+| GET | `/api/forms/:id` | 取提交详情（含明细与 105 个缺陷计数；也可用表单号查询） | 登录 |
+| PATCH | `/api/forms/:id` | **更新提交**（字段级合并；`lines` 提交则整笔替换），返回 **200** | 登录 |
+| POST | `/api/forms/:id/void` | 逻辑作废 + 原因 | 登录 |
+| GET | `/api/forms/:id/history` | 全部历史快照（按 `save_count` 倒序） | 登录 |
+| GET | `/api/forms/:id/history/diff?from=&to=` | 两版之间字段级 + 明细级差异（`to=current` 表示当前） | 登录 |
 | GET | `/api/audit-logs?entity=&entity_id=&limit=` | 操作日志检索 | 登录 |
 
-> **尚未实现**（需求已确认、待后续）：`GET /forms/:formNo/summary`（表单完成度汇总）、`GET /forms/:formNo/export`、`GET /forms/export`（导出）。
-> 表单完成度可由 `GET /api/forms/:formNo` 里每笔的 `is_complete` / `missing_fields` 自行汇总。
+> **尚未实现**：导出接口（`/forms/export`）、打印数据接口。
 
-**保存请求（`POST /forms/:formNo/records` 与 `PATCH /records/:id` 共用；批量时用 `records` 数组）**
+**提交请求（`POST /api/forms` 与 `PATCH /api/forms/:id` 共用；批量时用 `forms` 数组）**
 
 ```jsonc
 {
-  "enforce": "warn",              // warn（默认，只警告不阻断）| strict（拦下自相矛盾的数据）
-  "mode": "merge",                // merge（默认，字段级合并）| replace（整体替换）
-  "sequence_no": 2,               // 可选：指定笔序号；不传则自动递增（仅在单笔提交时有效）
-  "expected_save_count": 1,       // 可选：乐观锁，不匹配返回 409
+  "form_no": "QS-260930-001",     // 可选：不给则自动生成 {YYMMDD}-{流水}
+  "operation_code": "一次加硬",    // 检验工序（表单第一列）
+  "enforce": "warn",              // warn（默认，只警告）| strict（拦下自相矛盾的数据）
+  "expected_save_count": 1,       // 可选：乐观锁
   "client_request_id": "uuid",    // 可选：幂等键（也可用请求头 X-Idempotency-Key）
   "reason": "补填二次加硬",         // 可选：变更原因，写入历史与操作日志
-  "form": {                       // 可选：本次要改动的表单级字段（只提交要改的）
-    "sample_raw": "M2 S2 ND2 SMR",
+  "form": {                       // 字段补丁：只提交要改的字段
+    "sample_raw": "M2 S2 SM R VID2",
     "sample_project": "M2",
-    "unit_id": "u-01"
-  },
-  "record": {                     // 可选：本次要改动的笔级字段
-    "process_code": "一次加硬",
-    "submitted_by": "李四", "submitted_at": "2026-09-08T09:00:00+08:00",
-    "inspected_by": "张赛赛", "inspected_at": "2026-09-09T10:30:00+08:00",
-    "machine_operator": "王五", "handover_by": "赵六"
-  },
-  "lines": [                      // 可选：出现即整笔替换本笔明细
-    { "seq": 1, "total_qty": 100, "qualified_qty": 100, "defect_qty": 0 }
-  ]
+    "sample_spec": "S2",
+    "sample_size": "SM",
+    "sample_side": "R",
+    "unit_text": "一厂",
+    "lines": [                    // 提交即整笔替换明细
+      {
+        "total_qty": 100, "qualified_qty": 96, "defect_qty": 4,
+        "defects": {              // 只改给出的格子；给 {} 则清空
+          "prick":            { "concave": 1, "convex": 1 },
+          "scratch":          { "both": 1 },
+          "flange_recess":    { "concave": 1 },
+          "hardening_bubble": { "convex": 1 }
+        }
+      }
+    ]
+  }
 }
 ```
 
-**响应（每次保存都返回，便于调用方即时提示）**
+**三态字段级合并语义**
+
+| 情况 | 语义 |
+|---|---|
+| 键**不存在** | 不修改（保持原值） |
+| 键为 `null` | **清空**该字段（缺陷格子同样是"清零该格子"） |
+| 键有值 | 写入 |
+| `defects` 为空对象 `{}` | 清空全部缺陷计数 |
+| `lines` 出现（含 `[]`） | **整笔替换**明细；不出现则保持库中明细 |
+| 未知键 | **400**，并在 `details.hint` 提示 `GET /api/form-fields` 查看合法列 |
+
+**响应（每次保存都返回）**
 
 ```jsonc
 {
   "code": "ok", "message": "",
   "data": {
-    "action": "create_record",    // create_form | create_record | save_record | update_form | create_form+create_record
-    "form":   { "id": "...", "form_no": "M-260908-01", "sample_raw": "..." },
-    "record": { "id": "...", "sequence_no": 1, "save_count": 1,
-                "is_complete": false,
-                "missing_fields": ["submitted_by", "machine_operator"],
-                "total_qty": 100, "qualified_qty": 100, "defect_qty": 0, "pass_rate": 100 },
+    "action": "create_form",      // create_form | save_form
+    "submission": {
+      "id": "…", "form_no": "QS-260930-001", "operation_code": "一次加硬",
+      "sample_raw": "M2 S2 SM R VID2", "sample_project": "M2", "unit_text": "一厂",
+      "submitted_by": "…", "submitted_at": "2026-09-30T…Z",
+      "save_count": 1,
+      "total_qty": 100, "qualified_qty": 96, "defect_qty": 4, "pass_rate": 96,
+      "is_complete": true, "missing_fields": [],
+      "state": "ACTIVE",
+      "lines": [ { "seq": 1, "total_qty": 100, "qualified_qty": 96, "defect_qty": 4,
+                   "defects": { "prick": {"concave":1,"convex":1}, "…": "…" } } ]
+    },
     "issues":   [ { "rule": "V-10", "level": "warning",
-                    "field": "submitted_by", "message": "表单既有栏目「送检人」尚未填写" } ],
-    "warnings": [ /* 同 issues 中的 warning */ ],
+                    "field": "unit_id", "message": "「unit_id」尚未填写" } ],
+    "warnings": [ /* issues 中的 warning */ ],
     "errors":   [],
-    "missing_fields": ["submitted_by", "machine_operator"],
-    "is_complete": false
+    "missing_fields": [],
+    "is_complete": true
   }
 }
 ```
 
-**批量提交**（次日集中录入）：把 `records` 传成数组，整批**在同一个事务内**保存，任一笔失败则整批回滚：
+**批量提交**（整批在一个事务内保存，任一失败则全部回滚）：
 
 ```jsonc
 {
   "enforce": "warn",
-  "form": { "sample_raw": "M1 S1 MD L VID1 Rx", "sample_project": "M1" },
-  "records": [
-    { "record": { "process_code": "一次加硬" }, "lines": [ { "total_qty": 200, "qualified_qty": 198, "defect_qty": 2 } ] },
-    { "record": { "process_code": "二次加硬" }, "lines": [ { "total_qty": 200, "qualified_qty": 200 } ] }
+  "forms": [
+    { "form_no": "Q-001", "operation_code": "一次加硬", "form": { "lines": [ { "total_qty": 20, "qualified_qty": 20 } ] } },
+    { "form_no": "Q-002", "operation_code": "二次加硬", "form": { "lines": [ { "total_qty": 30, "qualified_qty": 30 } ] } }
   ]
 }
-// -> { "data": { "results": [ …两笔… ], "count": 2, "atomic": true } }
+// -> { "data": { "results": [ …两张… ], "count": 2, "atomic": true } }
 ```
 
-### 6.5 汇总统计
+### 6.6 汇总统计
+
 | 方法 | 路径 | 说明 | 限制 |
 |---|---|---|---|
 | GET | `/api/stats/dimensions` | 可用分组维度列表 | 登录 |
-| GET | `/api/stats/summary?group_by=sample_spec,sample_size&from=&to=&…` | 按维度分组汇总（最多 500 组） | 登录 |
-| GET | `/api/stats/defects?from=&to=&…` | 不良类别 × 表面分布 | 登录 |
-| GET | `/api/stats/workload?by=inspected_by\|recorded_by\|last_saved_by` | 工作量统计（最多 200 组） | 登录 |
+| GET | `/api/stats/summary?group_by=operation_code,sample_spec` | 按维度分组汇总（最多 500 组） | 登录 |
+| GET | `/api/stats/defects?…` | **不良缺陷分布**：35 列 × 3 表面的合计 | 登录 |
+| GET | `/api/stats/workload?by=submitted_by\|last_saved_by` | 工作量统计（最多 200 组） | 登录 |
 | GET | `/api/stats/incomplete-forms?limit=` | 未完成表单清单 | 登录 |
-| GET | `/api/audit-logs` | 操作日志检索（默认 100，上限 500） | 登录 |
 
-**`group_by` 白名单（16 个维度，取值必须是 snake_case）**：
-`sample_project`、`sample_model`、`sample_spec`、`sample_size`、`sample_side`、`sample_class`、`sample_raw`、`form_no`、`process`、`unit`、`inspected_by`、`submitted_by`、`machine_operator`、`handover_by`、`day`、`month`（可任意组合）。
-筛选参数（`summary` / `defects` / `workload` 共用）：`from`、`to`、`process`、`sample_project`、`sample_model`、`sample_spec`、`sample_size`、`sample_side`、`inspected_by`、`unit`、`include_void`。
+**`group_by` 白名单（14 个维度，取值为 snake_case）**：
+`operation_code`、`operation_text`、`sample_project`、`sample_model`、`sample_spec`、`sample_size`、
+`sample_side`、`sample_raw`、`form_no`、`unit`、`submitted_by`、`last_saved_by`、`day`、`month`（可任意组合）。
 
-> **统计口径提示**：不良子项合计可能大于不良品数（同一片镜片可计入多个类别，需求 Q5，登记待定）。
-> **尚未实现**：`/stats/save-activity`、导出接口（Excel/CSV）。
+筛选参数（`summary` / `defects` / `workload` 共用）：`from`、`to`、`operation_code`、
+`sample_project`、`sample_model`、`sample_spec`、`sample_size`、`sample_side`、`submitted_by`、`unit`、`include_void`。
 
-### 6.6 幂等（写接口重复提交保护）
-
-写方法（`POST`/`PATCH`/`PUT`/`DELETE`）支持幂等键：
-
-| 项 | 说明 |
-|---|---|
-| 键来源 | 请求头 `X-Idempotency-Key`（或 `Idempotency-Key`）优先；其次请求体 `client_request_id`（或 `clientRequestId` / `idempotency_key`） |
-| 作用域 | `(user_id, idempotency_key)`，不同用户互不影响 |
-| 命中行为 | 请求体指纹一致 → **回放首次响应**，响应头 `X-Idempotent-Replay: true`；指纹不同 → `409 conflict` |
-| 不缓存的响应 | 非 2xx（失败）不写幂等记录，允许用同一个键重试 |
-| 有效期 | `IDEMPOTENCY_TTL`（默认 24h；`<=0` 关闭该功能） |
-| 存储 | 表 `idempotency_requests`（迁移 `0002_idempotency`）；读取时顺手清理过期记录 |
-
-> 幂等表故障**不阻断业务**（记录错误后照常处理请求），保证"保护机制本身不会成为故障点"。
-
----
+> **口径提示**：缺陷子项合计可能大于不合格品数（同一片镜片可计入多个类别，需求 Q5 登记待定）。
 
 ## 7. 性能与索引
 
 | 场景 | 措施 |
 |---|---|
-| 表单列表筛选（表单号/日期/工序/样品维度/检验人） | 见 §4.2.3 的索引：`forms(状态+创建时间)`、`form_records(process+检验时间)`、`form_records(检验人+检验时间)` |
+| 表单列表筛选（表单号/日期/工序/样品维度/录入人） | 见 §4.2.3 的索引：`forms(state+created_at)`、`forms(operation_code+submitted_at)`、`forms(submitted_by)` |
 | 层级检索（S2+SM+L） | `forms(sampleSpec, sampleSize, sampleSide, sampleModel)` 复合索引；避免全表扫描 |
-| 按表单号载入（现场"接着填"） | `formNo` 唯一索引 + `form_records(formId)` 索引，一次查询即可拿到表单与全部笔 |
-| 统计 | 汇总字段落库在 `form_records`（`totalQty/qualifiedQty/defectQty`），**统计只需扫一张表，不必 JOIN 明细行**（明细只在导出时读取） |
-| 保存写入成本 | 单事务内：写 1 条 `record_history`（小 JSON）+ 替换明细（通常 1 行）+ 更新记录与表单。历史条数 = 保存次数（个位数），开销可忽略 |
-| 历史查询 | `record_history(recordId, saveCount)` 索引；详情按需分页 |
+| 按表单号载入 | `form_no` 唯一索引；明细按 `form_lines(form_id, seq)` 取 |
+| 统计 | 汇总字段落库在 `forms`（`total_qty/qualified_qty/defect_qty`），**分组统计只扫 `forms` 一张表**；不良缺陷分布才 JOIN `form_lines` |
+| 保存写入成本 | 单事务内：写 1 条 `form_history`（与明细等量的 JSON）+（提交 lines 时）替换明细 + 更新提交。历史条数 = 保存次数（个位数），开销可忽略 |
+| 历史查询 | `form_history(form_id, save_count)` 索引；详情按需分页 |
 | 导出大结果集 | 流式写入（游标 + 分批），限制单次导出上限（如 5 万行） |
 | 目标 | 单笔保存 P95 < 500ms；1000 笔量级条件查询 P95 < 2s |
 
@@ -965,7 +873,7 @@ saveRecord(input, actor, mode):
 | 输入 | 请求体字段白名单（只认识结构体上声明过的列名）+ `sqlx` 参数化查询（无拼接 SQL）；未知字段直接报 400，便于调用方发现拼写错误 |
 | 限流 | 登录接口按 IP + 账号限流；导出接口按用户限流 |
 | 传输 | 强制 HTTPS（反代跳转）；内网自签证书需导入信任 |
-| 日志不可篡改 | `audit_logs`、`record_history` 的应用账号无 UPDATE/DELETE 权限 |
+| 日志不可篡改 | `audit_logs`、`form_history` 的应用账号无 UPDATE/DELETE 权限 |
 | 备份 | 每日 `pg_dump` + WAL 归档；备份文件加密；恢复演练纳入验收 |
 | 隐私 | 仅采集姓名/工号等最小必要信息 |
 
@@ -1044,3 +952,4 @@ saveRecord(input, actor, mode):
 | **v0.3** | 第三轮确认后 | ① **数据模型改为三层**：`Form` / `FormRecord` / `RecordLine` + `RecordHistory`（§4.1、§4.2.3）；② **保存语义改为字段级合并**，`mode: incremental \| full` 控制校验强度（§5.6）；③ **恢复表单既有栏目**并新增 `recordedBy` 区分"表单上的人"与"录入人"（§4.2.3、Q18）；④ **删除 RBAC 四张表**，改为 `User.isAdmin` + 可替换的 `AuthorizationService`（§4.2.1、§5.5）；⑤ **新增完成度** `isComplete` / `missingFields` / 未完成表单清单（§5.7、§6.4）；⑥ API 全面调整（`/forms`、`/records`、history/diff、defect-columns），删除 roles 接口；⑦ **删除前端目录与页面章节**，改为"接口使用场景"（§3、§5.9）；⑧ 校验新增 V-10、V-6 降级为 warning、按 mode 分级（§5.3）；⑨ 性能、安全、测试、里程碑、风险表全部更新 | — |
 | **v0.5** | 骨架落地后（实现回写） | ① **技术栈落定并已实现**：Go 1.24 + Gin + sqlx，SQLite / PostgreSQL 双驱动（§1.3、§2）；② 表定义改为**手写 SQL 迁移**（`backend/migrations/{sqlite,postgres}/`），§4.2 的 Prisma 风格 DDL 仅作可读表结构说明；③ 时间列统一 **TEXT + UTC RFC3339**，双库行为一致（§4.2）；④ 校验参数由 `mode: incremental\|full` 改为 **`enforce: warn\|strict`**（与需求 v0.4 对齐），并明确 V-2/V-6/V-8/V-9/V-10 **任何模式都不阻断**；⑤ 仓库结构定为**单一仓库**：`lens-qs` 为项目根，`docs/` 与 `backend/` 平级，前端将来放 `frontend/`（§3）；⑥ 权限收敛为**两级**（普通用户 / 管理员，§5.5）；⑦ **汇总统计的通用 `group_by` 已实现**（需求 §4.7 的基础能力已具备）；⑧ 测试策略按实际落地的用例清单更新 | — |
 | **v0.6** | 幂等与批量补丁后 | ① **§6 接口清单按实际实现对齐**（path 全部带 `/api` 前缀、字段名 snake_case、`mode: merge\|replace` + 独立 `enforce`、`Issue.rule`；标注尚未实现的 `/forms/:formNo/summary`、导出、`/stats/save-activity`）；② **新增 §6.6 幂等设计**并新增表 `idempotency_requests`（迁移 `0002_idempotency`）；③ **批量提交改为整批原子**（`SaveBatch` 同事务，失败整批回滚）；④ §4.1 ER 概览与 §5.8 同步更新 | — |
+| **v0.7** | 录入场景澄清后（模型重构） | ① **数据模型由三层收敛为两层**：旧 forms+form_records+record_lines → 新 **forms（一次表单提交 = 某工序填的那张表单）+ form_lines（明细行）** + form_history（迁移 0003_form_submission）；② **工序上移到提交**（operation_code，表单第一列），成为列表与统计的主维度；③ **表单列目录落地**：顶层栏目 5 个 + **不良缺陷明细 35 列 × 凹/凸/双 = 105 个子列**，目录集中在 internal/formfields（唯一事实来源，form_lines 的列清单由它生成），接口 GET /api/form-fields 下发；④ **新增 §4.1.1/§4.1.2**（字段目录、工序表单模板）与 internal/operations（未登记工序按通用模板处理，开放全部列）；⑤ **字段级合并改为显式三态类型**（键不存在 / null 清空 / 有值），未知键报 400 并提示合法列；⑥ **表头与明细的优先级**：补丁里显式给出的表头栏目优先，否则按明细重算；⑦ 新增 POST /api/forms/batch（整批原子）、GET /api/form-templates、GET /api/form-fields；⑧ 统计口径改为按**表单提交**（= 工序），分组维度更新为 14 个，缺陷分布改为 35 列 × 3 表面 | — |

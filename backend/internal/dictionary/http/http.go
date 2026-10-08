@@ -31,8 +31,6 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 
 	r.GET("/dict/drawings", h.listDrawings)
 	r.POST("/dict/drawings/import", h.importDrawings)
-
-	r.GET("/dict/defect-columns", h.defectColumns)
 }
 
 func (h *Handler) listItems(c *gin.Context) {
@@ -115,6 +113,7 @@ func (h *Handler) updateItem(c *gin.Context) {
 func (h *Handler) categories(c *gin.Context) {
 	httpx.OK(c, gin.H{"categories": []string{
 		dictionary.CategoryProcess,
+		dictionary.CategoryInspectionOp,
 		dictionary.CategorySampleProject,
 		dictionary.CategorySampleModel,
 		dictionary.CategorySampleSpec,
@@ -274,28 +273,8 @@ func parseDrawingRow(row string) (dictionary.Drawing, bool) {
 	return d, true
 }
 
-func (h *Handler) defectColumns(c *gin.Context) {
-	// 列定义由服务端下发：新增不良类别不需要改调用方代码
-	type col struct {
-		Key   string `json:"key"`
-		Label string `json:"label"`
-	}
-	type group struct {
-		Code    string `json:"code"`
-		Label   string `json:"label"`
-		Columns []col  `json:"columns"`
-	}
-	groups := []group{
-		{"spot", "点伤", []col{{"spot_concave", "凹面"}, {"spot_convex", "凸面"}, {"spot_both", "双面"}}},
-		{"scratch", "划伤", []col{{"scratch_concave", "凹面"}, {"scratch_convex", "凸面"}, {"scratch_both", "双面"}}},
-		{"dirt", "脏污", []col{{"dirt_concave", "凹面"}, {"dirt_convex", "凸面"}, {"dirt_both", "双面"}}},
-		{"hard_spot", "加硬点", []col{{"hard_spot_concave", "凹面"}, {"hard_spot_convex", "凸面"}, {"hard_spot_both", "双面"}}},
-		{"debris", "垃圾点", []col{{"debris_concave", "凹面"}, {"debris_convex", "凸面"}, {"debris_both", "双面"}}},
-	}
-	leading := []col{{"total_qty", "检验总数"}, {"qualified_qty", "合格品"}, {"defect_qty", "不良品"}}
-	httpx.OK(c, gin.H{
-		"leading_columns": leading,
-		"groups":          groups,
-		"note":            "每个子格填的是该类不良的镜片数量",
-	})
-}
+// 说明：旧的 defectColumns 处理器已删除。
+// 它返回的是**旧模型**硬编码的 5 类缺陷（spot_* / debris_* 等），与现行的
+// 35 列不良缺陷明细不一致，留着会误导前端。
+// 列布局请使用 GET /api/form-fields 与 GET /api/form-templates（唯一事实来源：internal/formfields）。
+
