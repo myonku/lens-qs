@@ -129,13 +129,50 @@ type HeaderColumn struct {
 	Computed bool   `json:"computed"` // true 表示由服务端计算，提交无效
 }
 
-// HeaderColumns 是顶层栏目，顺序与纸质表单一致。
+// HeaderColumns 是"计数区"的顶层栏目，顺序与纸质表单一致。
+//
+// 说明：这里**只放计数区**（检验工序 + 三个合计 + 合格率）。
+// 纸质表单的表头栏目（单位/送检人/送检时间/检验人/检验时间/操机员/交接员）见 PaperColumns。
 var HeaderColumns = []HeaderColumn{
 	{"operation", "检验工序", KindText, false},
 	{"total_qty", "检验总数", KindInt, false},
 	{"qualified_qty", "合格品", KindInt, false},
 	{"defect_qty", "不合格品", KindInt, false},
 	{"pass_rate", "合格率", KindNumber, true}, // 服务端可由 合格品/检验总数 推导
+}
+
+// PaperColumns 是**纸质表单原有的表头栏目**（需求 B-11：全部纳入，不能省略）。
+//
+// 与系统留痕字段（submitted_by / last_saved_by / created_by）**并存且不混用**：
+//   - paper_* 存纸面上手写的值（人名、时间按录入的原文保存，不做格式假设）；
+//   - submitted_by / submitted_at 存"实际录入的系统用户与时间"，用于追溯（B-17）。
+var PaperColumns = []HeaderColumn{
+	{"paper_unit_id", "单位", KindText, false},
+	{"paper_submitter", "送检人", KindText, false},
+	{"paper_submitted_at", "送检时间", KindText, false},
+	{"paper_inspector", "检验人", KindText, false},
+	{"paper_inspected_at", "检验时间", KindText, false},
+	{"paper_machine_operator", "操机员", KindText, false},
+	{"paper_handover_by", "交接员", KindText, false},
+}
+
+// PaperFieldNames 返回纸质表头栏目的字段名。
+func PaperFieldNames() []string {
+	out := make([]string, 0, len(PaperColumns))
+	for _, h := range PaperColumns {
+		out = append(out, h.Code)
+	}
+	return out
+}
+
+// IsPaperField 报告字段名是否为合法的纸质表头栏目。
+func IsPaperField(name string) bool {
+	for _, h := range PaperColumns {
+		if h.Code == name {
+			return true
+		}
+	}
+	return false
 }
 
 // HeaderFieldNames 返回顶层栏目的字段名（用于合法性判断）。
@@ -159,8 +196,11 @@ func IsHeaderField(name string) bool {
 
 // Layout 是给前端渲染用的完整布局。
 type Layout struct {
-	Header        []HeaderColumn `json:"header_columns"`
-	Surfaces      []string       `json:"surfaces"`
+	// PaperColumns 是纸质表单原有的表头栏目（单位/送检人/…），前端表单顶部按此渲染
+	PaperColumns []HeaderColumn `json:"paper_columns"`
+	// HeaderColumns 是计数区栏目（检验工序/检验总数/…）
+	Header        []HeaderColumn    `json:"header_columns"`
+	Surfaces      []string          `json:"surfaces"`
 	SurfaceLabels map[string]string `json:"surface_labels"`
 	DefectGroup   struct {
 		Title   string   `json:"title"`
@@ -182,6 +222,7 @@ type LayoutColumn struct {
 // BuildLayout 组装完整布局。
 func BuildLayout() Layout {
 	var l Layout
+	l.PaperColumns = PaperColumns
 	l.Header = HeaderColumns
 	l.Surfaces = Surfaces
 	l.SurfaceLabels = SurfaceLabels
@@ -202,8 +243,13 @@ func BuildLayout() Layout {
 	return l
 }
 
-// FieldLabel 返回字段名对应的中文名（顶层栏目或缺陷列）。
+// FieldLabel 返回字段名对应的中文名（纸质栏目、计数区栏目或缺陷列）。
 func FieldLabel(name string) string {
+	for _, h := range PaperColumns {
+		if h.Code == name {
+			return h.Label
+		}
+	}
 	for _, h := range HeaderColumns {
 		if h.Code == name {
 			return h.Label

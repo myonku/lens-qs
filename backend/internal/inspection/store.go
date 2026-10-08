@@ -35,24 +35,36 @@ func (s *Store) rebind(q string) string { return s.db.Rebind(q) }
 
 const submissionColumns = `id, form_no, operation_code, operation_text,
 	sample_raw, sample_project, sample_model, sample_spec, sample_size, sample_side,
-	unit_id, unit_text, submitted_by, submitted_at, last_saved_by, last_saved_at, save_count,
+	paper_unit_id, paper_unit_text, paper_submitter, paper_submitted_at,
+	paper_inspector, paper_inspected_at, paper_machine_operator, paper_handover_by,
+	created_by, submitted_by, submitted_at, last_saved_by, last_saved_at, save_count,
 	total_qty, qualified_qty, defect_qty, pass_rate, is_complete, missing_fields,
 	state, voided_at, void_reason, remark, created_at, updated_at`
 
 // submissionRow 是数据库行（指针字段允许 NULL）。
 type submissionRow struct {
-	ID            string   `db:"id"`
-	FormNo        string   `db:"form_no"`
-	OperationCode string   `db:"operation_code"`
-	OperationText *string  `db:"operation_text"`
-	SampleRaw     string   `db:"sample_raw"`
-	SampleProject *string  `db:"sample_project"`
-	SampleModel   *string  `db:"sample_model"`
-	SampleSpec    *string  `db:"sample_spec"`
-	SampleSize    *string  `db:"sample_size"`
-	SampleSide    *string  `db:"sample_side"`
-	UnitID        *string  `db:"unit_id"`
-	UnitText      *string  `db:"unit_text"`
+	ID            string  `db:"id"`
+	FormNo        string  `db:"form_no"`
+	OperationCode string  `db:"operation_code"`
+	OperationText *string `db:"operation_text"`
+	SampleRaw     string  `db:"sample_raw"`
+	SampleProject *string `db:"sample_project"`
+	SampleModel   *string `db:"sample_model"`
+	SampleSpec    *string `db:"sample_spec"`
+	SampleSize    *string `db:"sample_size"`
+	SampleSide    *string `db:"sample_side"`
+
+	// 纸质表单原有的表头栏目
+	PaperUnitID          *string `db:"paper_unit_id"`
+	PaperUnitText        *string `db:"paper_unit_text"`
+	PaperSubmitter       *string `db:"paper_submitter"`
+	PaperSubmittedAt     *string `db:"paper_submitted_at"`
+	PaperInspector       *string `db:"paper_inspector"`
+	PaperInspectedAt     *string `db:"paper_inspected_at"`
+	PaperMachineOperator *string `db:"paper_machine_operator"`
+	PaperHandoverBy      *string `db:"paper_handover_by"`
+
+	CreatedBy     *string  `db:"created_by"`
 	SubmittedBy   *string  `db:"submitted_by"`
 	SubmittedAt   *string  `db:"submitted_at"`
 	LastSavedBy   *string  `db:"last_saved_by"`
@@ -73,12 +85,17 @@ type submissionRow struct {
 }
 
 func (r submissionRow) toModel() Submission {
-	return Submission{
+	s := Submission{
 		ID: r.ID, FormNo: r.FormNo, OperationCode: r.OperationCode, OperationText: r.OperationText,
 		SampleRaw: r.SampleRaw, SampleProject: r.SampleProject, SampleModel: r.SampleModel,
 		SampleSpec: r.SampleSpec, SampleSize: r.SampleSize, SampleSide: r.SampleSide,
-		UnitID: r.UnitID, UnitText: r.UnitText,
-		SubmittedBy: r.SubmittedBy, SubmittedAt: r.SubmittedAt,
+
+		PaperUnitID: r.PaperUnitID, PaperUnitText: r.PaperUnitText,
+		PaperSubmitter: r.PaperSubmitter, PaperSubmittedAt: r.PaperSubmittedAt,
+		PaperInspector: r.PaperInspector, PaperInspectedAt: r.PaperInspectedAt,
+		PaperMachineOperator: r.PaperMachineOperator, PaperHandoverBy: r.PaperHandoverBy,
+
+		CreatedBy: r.CreatedBy, SubmittedBy: r.SubmittedBy, SubmittedAt: r.SubmittedAt,
 		LastSavedBy: r.LastSavedBy, LastSavedAt: r.LastSavedAt, SaveCount: r.SaveCount,
 		TotalQty: r.TotalQty, QualifiedQty: r.QualifiedQty, DefectQty: r.DefectQty,
 		PassRate: r.PassRate, IsComplete: r.IsComplete,
@@ -86,6 +103,9 @@ func (r submissionRow) toModel() Submission {
 		State:         r.State, VoidedAt: r.VoidedAt, VoidReason: r.VoidReason, Remark: r.Remark,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 	}
+	// 单位别名回显（只读）
+	s.UnitID, s.UnitText = s.PaperUnitID, s.PaperUnitText
+	return s
 }
 
 func modelToRow(sub Submission) submissionRow {
@@ -93,8 +113,13 @@ func modelToRow(sub Submission) submissionRow {
 		ID: sub.ID, FormNo: sub.FormNo, OperationCode: sub.OperationCode, OperationText: sub.OperationText,
 		SampleRaw: sub.SampleRaw, SampleProject: sub.SampleProject, SampleModel: sub.SampleModel,
 		SampleSpec: sub.SampleSpec, SampleSize: sub.SampleSize, SampleSide: sub.SampleSide,
-		UnitID: sub.UnitID, UnitText: sub.UnitText,
-		SubmittedBy: sub.SubmittedBy, SubmittedAt: sub.SubmittedAt,
+
+		PaperUnitID: sub.PaperUnitID, PaperUnitText: sub.PaperUnitText,
+		PaperSubmitter: sub.PaperSubmitter, PaperSubmittedAt: sub.PaperSubmittedAt,
+		PaperInspector: sub.PaperInspector, PaperInspectedAt: sub.PaperInspectedAt,
+		PaperMachineOperator: sub.PaperMachineOperator, PaperHandoverBy: sub.PaperHandoverBy,
+
+		CreatedBy: sub.CreatedBy, SubmittedBy: sub.SubmittedBy, SubmittedAt: sub.SubmittedAt,
 		LastSavedBy: sub.LastSavedBy, LastSavedAt: sub.LastSavedAt, SaveCount: sub.SaveCount,
 		TotalQty: sub.TotalQty, QualifiedQty: sub.QualifiedQty, DefectQty: sub.DefectQty,
 		PassRate: sub.PassRate, IsComplete: sub.IsComplete,
@@ -215,7 +240,9 @@ func (s *Store) InsertSubmission(ctx context.Context, tx *sqlx.Tx, sub *Submissi
 	_, err := tx.NamedExecContext(ctx, `INSERT INTO forms (`+submissionColumns+`) VALUES (
 		:id, :form_no, :operation_code, :operation_text,
 		:sample_raw, :sample_project, :sample_model, :sample_spec, :sample_size, :sample_side,
-		:unit_id, :unit_text, :submitted_by, :submitted_at, :last_saved_by, :last_saved_at, :save_count,
+		:paper_unit_id, :paper_unit_text, :paper_submitter, :paper_submitted_at,
+		:paper_inspector, :paper_inspected_at, :paper_machine_operator, :paper_handover_by,
+		:created_by, :submitted_by, :submitted_at, :last_saved_by, :last_saved_at, :save_count,
 		:total_qty, :qualified_qty, :defect_qty, :pass_rate, :is_complete, :missing_fields,
 		:state, :voided_at, :void_reason, :remark, :created_at, :updated_at)`, row)
 	if err != nil {
@@ -232,7 +259,11 @@ func (s *Store) UpdateSubmission(ctx context.Context, tx *sqlx.Tx, sub *Submissi
 		form_no = :form_no, operation_code = :operation_code, operation_text = :operation_text,
 		sample_raw = :sample_raw, sample_project = :sample_project, sample_model = :sample_model,
 		sample_spec = :sample_spec, sample_size = :sample_size, sample_side = :sample_side,
-		unit_id = :unit_id, unit_text = :unit_text,
+		paper_unit_id = :paper_unit_id, paper_unit_text = :paper_unit_text,
+		paper_submitter = :paper_submitter, paper_submitted_at = :paper_submitted_at,
+		paper_inspector = :paper_inspector, paper_inspected_at = :paper_inspected_at,
+		paper_machine_operator = :paper_machine_operator, paper_handover_by = :paper_handover_by,
+		created_by = :created_by,
 		submitted_by = :submitted_by, submitted_at = :submitted_at,
 		last_saved_by = :last_saved_by, last_saved_at = :last_saved_at, save_count = :save_count,
 		total_qty = :total_qty, qualified_qty = :qualified_qty, defect_qty = :defect_qty,
@@ -256,7 +287,9 @@ type FormFilter struct {
 	SampleSpec    string
 	SampleSize    string
 	SampleSide    string
-	Unit          string
+	Inspector     string // 纸面"检验人"
+	Submitter     string // 纸面"送检人"
+	Unit          string // 单位
 	From          string // 提交时间起
 	To            string // 提交时间止
 	Incomplete    bool   // 只看未填完整
@@ -334,8 +367,10 @@ func (s *Store) filterWhere(f FormFilter) (string, []any) {
 	add("sample_spec", f.SampleSpec)
 	add("sample_size", f.SampleSize)
 	add("sample_side", f.SampleSide)
+	add("paper_inspector", f.Inspector)
+	add("paper_submitter", f.Submitter)
 	if v := strings.TrimSpace(f.Unit); v != "" {
-		clauses = append(clauses, "COALESCE(unit_text, unit_id) = ?")
+		clauses = append(clauses, "COALESCE(paper_unit_text, paper_unit_id) = ?")
 		args = append(args, v)
 	}
 	return strings.Join(clauses, " AND "), args

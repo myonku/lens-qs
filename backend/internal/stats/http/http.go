@@ -42,6 +42,8 @@ func filterFromQuery(c *gin.Context) stats.Filter {
 		Spec:          c.Query("sample_spec"),
 		Size:          c.Query("sample_size"),
 		Side:          c.Query("sample_side"),
+		Inspector:     c.Query("paper_inspector"),
+		Submitter:     c.Query("paper_submitter"),
 		SubmittedBy:   c.Query("submitted_by"),
 		Unit:          c.Query("unit"),
 		OnlyActive:    c.Query("include_void") != "true",

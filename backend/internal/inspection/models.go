@@ -123,22 +123,37 @@ type Submission struct {
 	OperationCode string  `json:"operation_code"`
 	OperationText *string `json:"operation_text,omitempty"`
 
-	// 样品信息：原始串（事实来源，永不被改写）+ 拆解字段 + 单位
+	// 样品信息：原始串（事实来源，永不被改写）+ 拆解字段
 	SampleRaw     string  `json:"sample_raw"`
 	SampleProject *string `json:"sample_project,omitempty"`
 	SampleModel   *string `json:"sample_model,omitempty"`
 	SampleSpec    *string `json:"sample_spec,omitempty"`
 	SampleSize    *string `json:"sample_size,omitempty"`
 	SampleSide    *string `json:"sample_side,omitempty"`
-	UnitID        *string `json:"unit_id,omitempty"`
-	UnitText      *string `json:"unit_text,omitempty"`
 
-	// 系统留痕（与纸面人名无关）
-	SubmittedBy *string `json:"submitted_by,omitempty"` // 实际录入的系统用户
+	// ---- 纸质表单原有的表头栏目（需求 B-11：全部纳入，不能省略）----
+	// 与下面的系统留痕字段**并存且不混用**：这里存纸面上手写的值。
+	PaperUnitID          *string `json:"paper_unit_id,omitempty"`
+	PaperUnitText        *string `json:"paper_unit_text,omitempty"`
+	PaperSubmitter       *string `json:"paper_submitter,omitempty"`
+	PaperSubmittedAt     *string `json:"paper_submitted_at,omitempty"`
+	PaperInspector       *string `json:"paper_inspector,omitempty"`
+	PaperInspectedAt     *string `json:"paper_inspected_at,omitempty"`
+	PaperMachineOperator *string `json:"paper_machine_operator,omitempty"`
+	PaperHandoverBy      *string `json:"paper_handover_by,omitempty"`
+
+	// ---- 系统留痕（与纸面人名无关，B-17）----
+	CreatedBy   *string `json:"created_by,omitempty"` // 首次录入的系统用户
+	SubmittedBy *string `json:"submitted_by,omitempty"`
 	SubmittedAt *string `json:"submitted_at,omitempty"`
 	LastSavedBy *string `json:"last_saved_by,omitempty"`
 	LastSavedAt *string `json:"last_saved_at,omitempty"`
 	SaveCount   int     `json:"save_count"`
+
+	// UnitID / UnitText 是 paper_unit_* 的**只读别名**，仅为兼容早期接口与前端而保留。
+	// 写入请用 paper_unit_id / paper_unit_text（落库后这里会回显同样的值）。
+	UnitID   *string `json:"unit_id,omitempty"`
+	UnitText *string `json:"unit_text,omitempty"`
 
 	// 汇总（服务端按明细行重算；仅当调用方未显式给出时回填）
 	TotalQty     int      `json:"total_qty"`

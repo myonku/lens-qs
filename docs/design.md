@@ -13,7 +13,7 @@
 > **v0.3 设计层面主要变更**
 > 1. **数据模型重构**：由「一份表单 = 一条记录」改为「**一份表单（Form）+ 多笔工序记录（Record）+ 每笔多行明细（Line）**」三层结构（§4.2.3）。
 > 2. **保存语义**：由"整体覆盖"改为"**字段级合并更新**"（`PATCH` 语义），并以 `enforce: warn | strict` 控制校验强度（§5.6）。
-> 3. **表单既有栏目全部恢复**：单位 / 送检人 / 送检时间 / 检验人 / 检验时间 / 操机员 / 交接员；并区分"表单上写的"与"实际录入系统的人"（`recorded_by`）。
+> 3. **表单既有栏目全部恢复**：单位 / 送检人 / 送检时间 / 检验人 / 检验时间 / 操机员 / 交接员；并区分"表单上写的"（`paper_*`）与"实际录入系统的人"（`created_by` / `submitted_by` / `last_saved_by`）。
 > 4. **删除 RBAC**：去掉 `Role` / `Permission` / `RolePermission` / `UserRole` 表，改为 `User.isAdmin` 布尔标记 + 可替换的授权判定层（§5.5）。
 > 5. **新增完成度**：`isComplete` / `missingFields` 与"未完成表单清单"（§5.7）。
 > 6. 前端页面结构降级为"接口使用场景说明"（§5.9）。
@@ -172,6 +172,9 @@ users ──< sessions
   ├──< audit_logs
 
 forms（**一次表单提交 = 某工序填的那张表单**，form_no 唯一）
+  │   纸质表头栏目 paper_*（单位/送检人/送检时间/检验人/检验时间/操机员/交接员）
+  │   计数区栏目（检验工序 + 检验总数/合格品/不合格品/合格率）
+  │   系统留痕（created_by/submitted_by/last_saved_by/save_count）—— 与纸面人名不混用
   ├──< form_lines（明细行：检验总数/合格品/不合格品 + 35 个缺陷列 × 3 表面 = 105 个计数）
   └──< form_history（每次保存前的完整快照，追加写）
 
@@ -199,8 +202,21 @@ dict_items（检验工序 / 单位 / 样品段 / 缺陷类别文案）
 
 | 分组 | 数量 | 说明 |
 |---|---|---|
-| 顶层栏目 | 5 | 检验工序、检验总数、合格品、不合格品、合格率（合格率由服务端计算） |
+| **纸质表头栏目** | 7 栏目 / 8 字段 | 单位、送检人、送检时间、检验人、检验时间、操机员、交接员；字段名 `paper_*`，存**纸面手写值** |
+| 计数区栏目 | 5 | 检验工序、检验总数、合格品、不合格品、合格率（合格率由服务端计算） |
 | 不良缺陷明细 | 35 列 | 每列含 **凹面 `concave` / 凸面 `convex` / 双面 `both`** 三个计数 → 共 105 个子列 |
+| **合计** | **117 个可填列** | 7 + 5 + 105 |
+
+**纸质栏目 vs 系统留痕（不可混用，B-11/B-17）**
+
+| 类别 | 字段 | 存什么 |
+|---|---|---|
+| 纸质栏目 | `paper_unit_id`/`paper_unit_text`、`paper_submitter`、`paper_submitted_at`、`paper_inspector`、`paper_inspected_at`、`paper_machine_operator`、`paper_handover_by` | **纸面上手写的值**；人名按原文，时间按录入原文（不做日期格式假设） |
+| 系统留痕 | `created_by`、`submitted_by`、`submitted_at`、`last_saved_by`、`last_saved_at`、`save_count` | **实际登录用户与时间**，仅用于追溯 |
+
+> 单位在库中只保留 `paper_unit_*` 两列（迁移 0004 删除了 0003 里的 `unit_id`/`unit_text`）。
+> 接口仍接受旧写法 `unit_id`/`unit_text`：写入时归一到 `paper_unit_*`（同时出现时以 `paper_unit_*` 为准），
+> 读取时作为**只读别名**回显。
 
 字段命名：`<缺陷编码>_<表面>`，例如 `prick_concave`（点伤-凹面）、`flange_recess_both`（法兰边凹痕-双面）。
 落库列名与接口字段名完全一致，因此 `form_lines` 的列清单也由该目录生成（新增列只需改目录 + 加一次迁移）。
@@ -332,8 +348,12 @@ model SampleParseCache {           // "原始串 → 结构化结果"缓存，�
 | `operation_code` / `operation_text` | text | **检验工序**（表单第一列）；原文另存 |
 | `sample_raw` | text | 样品信息原始串（事实来源，永不被改写） |
 | `sample_project` / `sample_model` / `sample_spec` / `sample_size` / `sample_side` | text null | 样品结构化字段（用于查询与汇总） |
-| `unit_id` / `unit_text` | text null | 单位（字典 id 或原文） |
-| `submitted_by` / `submitted_at` | text | **实际录入的系统用户**与时间 |
+| `paper_unit_id` / `paper_unit_text` | text null | 单位（字典 id / 原文）——纸质栏目 |
+| `paper_submitter` / `paper_submitted_at` | text null | 送检人 / 送检时间（**纸面手写值**，时间为原文） |
+| `paper_inspector` / `paper_inspected_at` | text null | 检验人 / 检验时间（**纸面手写值**） |
+| `paper_machine_operator` / `paper_handover_by` | text null | 操机员 / 交接员（**纸面手写值**） |
+| `created_by` | text | 首次录入的系统用户 |
+| `submitted_by` / `submitted_at` | text | **实际录入的系统用户**与时间（≠ 纸面"送检人"） |
 | `last_saved_by` / `last_saved_at` / `save_count` | text / int | 最近保存人与次数（乐观锁依据） |
 | `total_qty` / `qualified_qty` / `defect_qty` | int | 表头栏目（有明细时按明细重算，显式给出则优先） |
 | `pass_rate` | real null | 合格率（服务端计算） |
@@ -341,7 +361,8 @@ model SampleParseCache {           // "原始串 → 结构化结果"缓存，�
 | `state` / `voided_at` / `void_reason` / `remark` | | 状态（ACTIVE/VOID）与作废信息 |
 
 索引：`form_no` 唯一；另按 `state+created_at`、`operation_code+submitted_at`、
-`sample_spec+sample_size+sample_side+sample_model`、`sample_project`、`unit_id`、`submitted_by`、`state+is_complete` 建索引。
+`sample_spec+sample_size+sample_side+sample_model`、`sample_project`、`submitted_by`、`state+is_complete`，
+以及按纸面人员检索的 `paper_inspector`、`paper_submitter`、`paper_unit_id` 建索引。
 
 **`form_lines`（明细行）**
 
@@ -759,7 +780,14 @@ saveForm(input, actor, enforce):
     "sample_spec": "S2",
     "sample_size": "SM",
     "sample_side": "R",
-    "unit_text": "一厂",
+    // 纸质表单原有的表头栏目（手写值，与系统留痕分区存放）
+    "paper_unit_text": "一厂",
+    "paper_submitter": "王五",
+    "paper_submitted_at": "2026.9.8",
+    "paper_inspector": "张赛赛",
+    "paper_inspected_at": "2026.9.9",
+    "paper_machine_operator": "赵六",
+    "paper_handover_by": "钱七",
     "lines": [                    // 提交即整笔替换明细
       {
         "total_qty": 100, "qualified_qty": 96, "defect_qty": 4,
@@ -785,6 +813,7 @@ saveForm(input, actor, enforce):
 | `defects` 为空对象 `{}` | 清空全部缺陷计数 |
 | `lines` 出现（含 `[]`） | **整笔替换**明细；不出现则保持库中明细 |
 | 未知键 | **400**，并在 `details.hint` 提示 `GET /api/form-fields` 查看合法列 |
+| `unit_id` / `unit_text` | 兼容别名：写入时归一到 `paper_unit_id`/`paper_unit_text`；同一次请求同时给出时**以 `paper_*` 为准**；数据库里已无 `unit_*` 列 |
 
 **响应（每次保存都返回）**
 
@@ -837,12 +866,18 @@ saveForm(input, actor, enforce):
 | GET | `/api/stats/workload?by=submitted_by\|last_saved_by` | 工作量统计（最多 200 组） | 登录 |
 | GET | `/api/stats/incomplete-forms?limit=` | 未完成表单清单 | 登录 |
 
-**`group_by` 白名单（14 个维度，取值为 snake_case）**：
+**`group_by` 白名单（19 个维度，取值为 snake_case）**：
 `operation_code`、`operation_text`、`sample_project`、`sample_model`、`sample_spec`、`sample_size`、
-`sample_side`、`sample_raw`、`form_no`、`unit`、`submitted_by`、`last_saved_by`、`day`、`month`（可任意组合）。
+`sample_side`、`sample_raw`、`form_no`、`unit`、
+**`paper_inspector`、`paper_submitter`、`paper_operator`、`paper_handover`**、
+`submitted_by`、`last_saved_by`、`created_by`、`day`、`month`（可任意组合）。
+
+> 纸面人员维度与系统录入人维度是**两组不同的维度**（见 §4.1.1）；
+> `day` / `month` 取 `COALESCE(paper_submitted_at, submitted_at, created_at)`。
 
 筛选参数（`summary` / `defects` / `workload` 共用）：`from`、`to`、`operation_code`、
-`sample_project`、`sample_model`、`sample_spec`、`sample_size`、`sample_side`、`submitted_by`、`unit`、`include_void`。
+`sample_project`、`sample_model`、`sample_spec`、`sample_size`、`sample_side`、
+`paper_inspector`、`paper_submitter`、`submitted_by`、`unit`、`include_void`。
 
 > **口径提示**：缺陷子项合计可能大于不合格品数（同一片镜片可计入多个类别，需求 Q5 登记待定）。
 
@@ -952,4 +987,5 @@ saveForm(input, actor, enforce):
 | **v0.3** | 第三轮确认后 | ① **数据模型改为三层**：`Form` / `FormRecord` / `RecordLine` + `RecordHistory`（§4.1、§4.2.3）；② **保存语义改为字段级合并**，`mode: incremental \| full` 控制校验强度（§5.6）；③ **恢复表单既有栏目**并新增 `recordedBy` 区分"表单上的人"与"录入人"（§4.2.3、Q18）；④ **删除 RBAC 四张表**，改为 `User.isAdmin` + 可替换的 `AuthorizationService`（§4.2.1、§5.5）；⑤ **新增完成度** `isComplete` / `missingFields` / 未完成表单清单（§5.7、§6.4）；⑥ API 全面调整（`/forms`、`/records`、history/diff、defect-columns），删除 roles 接口；⑦ **删除前端目录与页面章节**，改为"接口使用场景"（§3、§5.9）；⑧ 校验新增 V-10、V-6 降级为 warning、按 mode 分级（§5.3）；⑨ 性能、安全、测试、里程碑、风险表全部更新 | — |
 | **v0.5** | 骨架落地后（实现回写） | ① **技术栈落定并已实现**：Go 1.24 + Gin + sqlx，SQLite / PostgreSQL 双驱动（§1.3、§2）；② 表定义改为**手写 SQL 迁移**（`backend/migrations/{sqlite,postgres}/`），§4.2 的 Prisma 风格 DDL 仅作可读表结构说明；③ 时间列统一 **TEXT + UTC RFC3339**，双库行为一致（§4.2）；④ 校验参数由 `mode: incremental\|full` 改为 **`enforce: warn\|strict`**（与需求 v0.4 对齐），并明确 V-2/V-6/V-8/V-9/V-10 **任何模式都不阻断**；⑤ 仓库结构定为**单一仓库**：`lens-qs` 为项目根，`docs/` 与 `backend/` 平级，前端将来放 `frontend/`（§3）；⑥ 权限收敛为**两级**（普通用户 / 管理员，§5.5）；⑦ **汇总统计的通用 `group_by` 已实现**（需求 §4.7 的基础能力已具备）；⑧ 测试策略按实际落地的用例清单更新 | — |
 | **v0.6** | 幂等与批量补丁后 | ① **§6 接口清单按实际实现对齐**（path 全部带 `/api` 前缀、字段名 snake_case、`mode: merge\|replace` + 独立 `enforce`、`Issue.rule`；标注尚未实现的 `/forms/:formNo/summary`、导出、`/stats/save-activity`）；② **新增 §6.6 幂等设计**并新增表 `idempotency_requests`（迁移 `0002_idempotency`）；③ **批量提交改为整批原子**（`SaveBatch` 同事务，失败整批回滚）；④ §4.1 ER 概览与 §5.8 同步更新 | — |
-| **v0.7** | 录入场景澄清后（模型重构） | ① **数据模型由三层收敛为两层**：旧 forms+form_records+record_lines → 新 **forms（一次表单提交 = 某工序填的那张表单）+ form_lines（明细行）** + form_history（迁移 0003_form_submission）；② **工序上移到提交**（operation_code，表单第一列），成为列表与统计的主维度；③ **表单列目录落地**：顶层栏目 5 个 + **不良缺陷明细 35 列 × 凹/凸/双 = 105 个子列**，目录集中在 internal/formfields（唯一事实来源，form_lines 的列清单由它生成），接口 GET /api/form-fields 下发；④ **新增 §4.1.1/§4.1.2**（字段目录、工序表单模板）与 internal/operations（未登记工序按通用模板处理，开放全部列）；⑤ **字段级合并改为显式三态类型**（键不存在 / null 清空 / 有值），未知键报 400 并提示合法列；⑥ **表头与明细的优先级**：补丁里显式给出的表头栏目优先，否则按明细重算；⑦ 新增 POST /api/forms/batch（整批原子）、GET /api/form-templates、GET /api/form-fields；⑧ 统计口径改为按**表单提交**（= 工序），分组维度更新为 14 个，缺陷分布改为 35 列 × 3 表面 | — |
+| **v0.7** | 录入场景澄清后（模型重构） | ① **数据模型由三层收敛为两层**：旧 forms+form_records+record_lines → 新 **forms（一次表单提交 = 某工序填的那张表单）+ form_lines（明细行）** + form_history（迁移 0003_form_submission）；② **工序上移到提交**（operation_code，表单第一列），成为列表与统计的主维度；③ **表单列目录落地**：计数区栏目 5 个 + **不良缺陷明细 35 列 × 凹/凸/双 = 105 个子列**〔**已被 v0.8 更正**：当时误删了纸质表头栏目〕，目录集中在 internal/formfields（唯一事实来源，form_lines 的列清单由它生成），接口 GET /api/form-fields 下发；④ **新增 §4.1.1/§4.1.2**（字段目录、工序表单模板）与 internal/operations（未登记工序按通用模板处理，开放全部列）；⑤ **字段级合并改为显式三态类型**（键不存在 / null 清空 / 有值），未知键报 400 并提示合法列；⑥ **表头与明细的优先级**：补丁里显式给出的表头栏目优先，否则按明细重算；⑦ 新增 POST /api/forms/batch（整批原子）、GET /api/form-templates、GET /api/form-fields；⑧ 统计口径改为按**表单提交**（= 工序），分组维度更新为 14 个〔**v0.8 扩到 19 个**〕，缺陷分布改为 35 列 × 3 表面 | — |
+| **v0.8** | 字段误删恢复 | ① **更正 v0.7 的一处误判**：业务方给的列清单截图只是**要求新增字段**，不是新的表单结构定义；v0.7 据此把纸质表头栏目删掉了，现恢复（§4.1.1）；② 确立硬规则：**纸质栏目 `paper_*`（手写值）与系统留痕 `created_by`/`submitted_by`（系统用户）并存且不混用**；③ 字段目录 = 7 纸质栏目 + 5 计数栏目 + 105 缺陷子列 = **117 个可填列**；④ 单位统一为 `paper_unit_*`，`unit_id`/`unit_text` 降级为接口层兼容别名（库中已删列）；⑤ `group_by` 白名单扩到 **19** 维（新增纸面人员 4 维与 `created_by`），筛选新增 `paper_inspector`/`paper_submitter`；⑥ V-10 缺失判据补入「检验人」；迁移 `0004_paper_fields`（up/down 均已验证可往返） | — |

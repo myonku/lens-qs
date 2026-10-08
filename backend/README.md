@@ -93,23 +93,37 @@ curl http://127.0.0.1:8080/healthz
 
 ```
 forms（表单提交，form_no 唯一）
-├─ operation_code      检验工序（表单第一列，也是检索/统计主维度）
-├─ 表头栏目：total_qty / qualified_qty / defect_qty / pass_rate
-├─ 样品信息：sample_raw（事实来源）+ 项目/型号/规格/大小/左右 + 单位
-├─ 系统留痕：submitted_by / submitted_at / save_count / last_saved_by / last_saved_at
+├─ 纸质表头栏目（paper_*，纸面手写值）
+│    单位 paper_unit_id/paper_unit_text、送检人 paper_submitter、送检时间 paper_submitted_at、
+│    检验人 paper_inspector、检验时间 paper_inspected_at、
+│    操机员 paper_machine_operator、交接员 paper_handover_by
+├─ 计数区栏目
+│    operation_code 检验工序（表单第一列，检索/统计主维度）
+│    total_qty / qualified_qty / defect_qty / pass_rate
+├─ 样品信息：sample_raw（事实来源）+ 项目/型号/规格/大小/左右
+├─ 系统留痕（≠ 纸面人名）：created_by / submitted_by / submitted_at
+│                            / last_saved_by / last_saved_at / save_count
 ├─ 完成度：is_complete / missing_fields
 ├─ form_lines（明细行，1..N）
 │  └─ 合计 3 列 + 不良缺陷明细 35 列 × 凹面/凸面/双面 = 105 个计数列
 └─ form_history（每次保存前的完整快照，只增不可改）
 ```
 
+> ⚠️ **纸质栏目与系统留痕不混用**（需求 B-11 / B-17）：
+> `paper_submitter` / `paper_inspector` 等是**纸面上手写的人名**（时间按录入原文存，不做日期格式假设）；
+> `created_by` / `submitted_by` 是**实际登录的系统用户**，仅用于追溯。
+> 表单列合计 = 7 个纸质栏目 + 5 个计数栏目 + 105 个缺陷子列 = **117 个可填列**。
+> 单位在库中只有 `paper_unit_*` 两列；接口仍接受旧写法 `unit_id`/`unit_text`（写入归一，同时给出时以 `paper_unit_*` 为准），读取时作为只读别名回显。
+
 **表单列目录**是字段的唯一事实来源，位于 `internal/formfields/formfields.go`：
 
 | 分组 | 数量 |
 |---|---|
-| 顶层栏目 | 5（检验工序 / 检验总数 / 合格品 / 不合格品 / 合格率） |
+| **纸质表头栏目** | **7 栏目（8 字段）**：单位、送检人、送检时间、检验人、检验时间、操机员、交接员 |
+| 计数区栏目 | 5（检验工序 / 检验总数 / 合格品 / 不合格品 / 合格率） |
 | 不良缺陷明细 | **35 列**（点伤、划伤、法兰边点伤、…、法兰边凹痕） |
 | 展开后的计数子列 | **105**（每列 × 凹面 `concave` / 凸面 `convex` / 双面 `both`） |
+| **合计可填列** | **117** |
 
 字段命名：`<缺陷编码>_<表面>`，例如 `prick_concave`、`flange_recess_both`。
 `form_lines` 的列清单与插入语句都由该目录生成，因此**新增一个缺陷列只需改目录 + 加一次迁移**。
@@ -217,7 +231,7 @@ forms（表单提交，form_no 唯一）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/forms` | 列表（`keyword`/`state`/`operation_code`/样品各维度/`unit`/`from`/`to`/`incomplete` + 分页） |
+| GET | `/forms` | 列表（`keyword`/`state`/`operation_code`/样品各维度/`paper_inspector`/`paper_submitter`/`unit`/`from`/`to`/`incomplete` + 分页） |
 | POST | `/forms` | **新建提交**；`form_no` 已存在则按其字段级合并更新（返回 201） |
 | POST | `/forms/batch` | **批量提交**多张表单（`forms` 数组，整批原子） |
 | GET | `/forms/:id` | 取提交详情（含明细与全部缺陷计数；也可用表单号查询） |
@@ -237,8 +251,12 @@ forms（表单提交，form_no 唯一）
 | GET | `/stats/workload?by=submitted_by\|last_saved_by` | 工作量 |
 | GET | `/stats/incomplete-forms` | 未完成表单清单 |
 
-分组维度（14 个）：`operation_code` `operation_text` `sample_project` `sample_model` `sample_spec`
-`sample_size` `sample_side` `sample_raw` `form_no` `unit` `submitted_by` `last_saved_by` `day` `month`。
+分组维度（19 个）：`operation_code` `operation_text` `sample_project` `sample_model` `sample_spec`
+`sample_size` `sample_side` `sample_raw` `form_no` `unit`
+`paper_inspector` `paper_submitter` `paper_operator` `paper_handover`
+`submitted_by` `last_saved_by` `created_by` `day` `month`。
+
+> 前一组是**纸面手写人员**维度，后一组是**系统录入人**维度，两者不同（见上文警告）。
 
 ### 保存请求示例
 
@@ -254,7 +272,14 @@ forms（表单提交，form_no 唯一）
   "form": {                       // 字段补丁：只提交要改的字段
     "sample_raw": "M2 S2 SM R VID2",
     "sample_project": "M2",
-    "unit_text": "一厂",
+    // 纸质表单原有表头栏目（手写值，与系统留痕分区存放）
+    "paper_unit_text": "一厂",
+    "paper_submitter": "王五",
+    "paper_submitted_at": "2026.9.8",
+    "paper_inspector": "张赛赛",
+    "paper_inspected_at": "2026.9.9",
+    "paper_machine_operator": "赵六",
+    "paper_handover_by": "钱七",
     "lines": [                    // 提交即整笔替换明细
       {
         "total_qty": 100, "qualified_qty": 96, "defect_qty": 4,

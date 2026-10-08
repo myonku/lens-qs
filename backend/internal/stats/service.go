@@ -30,11 +30,19 @@ var groupExpr = map[string]string{
 	"sample_side":    "f.sample_side",
 	"sample_raw":     "f.sample_raw",
 	"form_no":        "f.form_no",
-	"unit":           "COALESCE(f.unit_text, f.unit_id)",
-	"submitted_by":   "f.submitted_by",
-	"last_saved_by":  "f.last_saved_by",
-	"day":            "substr(COALESCE(f.submitted_at, f.created_at), 1, 10)",
-	"month":          "substr(COALESCE(f.submitted_at, f.created_at), 1, 7)",
+	"unit":           "COALESCE(f.paper_unit_text, f.paper_unit_id)",
+	// 纸面人员（手写人名，B-11/B-17）
+	"paper_inspector":  "f.paper_inspector",
+	"paper_submitter":  "f.paper_submitter",
+	"paper_operator":   "f.paper_machine_operator",
+	"paper_handover":   "f.paper_handover_by",
+	// 系统留痕（实际录入人）
+	"submitted_by":  "f.submitted_by",
+	"last_saved_by": "f.last_saved_by",
+	"created_by":    "f.created_by",
+	// 日期
+	"day":   "substr(COALESCE(f.paper_submitted_at, f.submitted_at, f.created_at), 1, 10)",
+	"month": "substr(COALESCE(f.paper_submitted_at, f.submitted_at, f.created_at), 1, 7)",
 }
 
 // Service 提供汇总统计。
@@ -56,7 +64,9 @@ type Filter struct {
 	Spec          string
 	Size          string
 	Side          string
-	SubmittedBy   string
+	Inspector     string // 纸面"检验人"
+	Submitter     string // 纸面"送检人"
+	SubmittedBy   string // 系统录入人
 	Unit          string
 	OnlyActive    bool
 }
@@ -325,11 +335,11 @@ func buildWhere(f Filter) (string, []any) {
 		clauses = append(clauses, "f.state = 'ACTIVE'")
 	}
 	if f.From != "" {
-		clauses = append(clauses, "COALESCE(f.submitted_at, f.created_at) >= ?")
+		clauses = append(clauses, "COALESCE(f.paper_submitted_at, f.submitted_at, f.created_at) >= ?")
 		args = append(args, f.From)
 	}
 	if f.To != "" {
-		clauses = append(clauses, "COALESCE(f.submitted_at, f.created_at) <= ?")
+		clauses = append(clauses, "COALESCE(f.paper_submitted_at, f.submitted_at, f.created_at) <= ?")
 		args = append(args, f.To+"T23:59:59Z")
 	}
 	add := func(col, val string) {
@@ -344,9 +354,11 @@ func buildWhere(f Filter) (string, []any) {
 	add("f.sample_spec", f.Spec)
 	add("f.sample_size", f.Size)
 	add("f.sample_side", f.Side)
+	add("f.paper_inspector", f.Inspector)
+	add("f.paper_submitter", f.Submitter)
 	add("f.submitted_by", f.SubmittedBy)
 	if v := strings.TrimSpace(f.Unit); v != "" {
-		clauses = append(clauses, "COALESCE(f.unit_text, f.unit_id) = ?")
+		clauses = append(clauses, "COALESCE(f.paper_unit_text, f.paper_unit_id) = ?")
 		args = append(args, v)
 	}
 	return strings.Join(clauses, " AND "), args

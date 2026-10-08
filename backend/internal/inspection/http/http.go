@@ -86,10 +86,12 @@ func actorOf(c *gin.Context) inspection.Actor {
 func (h *Handler) listTemplates(c *gin.Context) {
 	list := make([]gin.H, 0, len(operations.Defaults))
 	for _, t := range operations.Defaults {
+		layout := inspection.LayoutFor(t.Code)
 		list = append(list, gin.H{
-			"operation":      t,
-			"layout":         inspection.LayoutFor(t.Code),
-			"field_count":    len(formfields.HeaderColumns) + len(formfields.DefectFieldNames()),
+			"operation": t,
+			"layout":    layout,
+			"field_count": len(formfields.PaperColumns) + len(formfields.HeaderColumns) +
+				len(formfields.DefectFieldNames()),
 		})
 	}
 	httpx.OK(c, gin.H{
@@ -111,17 +113,22 @@ func (h *Handler) getTemplate(c *gin.Context) {
 func (h *Handler) listFields(c *gin.Context) {
 	layout := formfields.BuildLayout()
 	httpx.OK(c, gin.H{
+		// 纸质表单原有的表头栏目（单位/送检人/送检时间/检验人/检验时间/操机员/交接员）
+		"paper_columns":  layout.PaperColumns,
 		"header_columns": layout.Header,
 		"surfaces":       layout.Surfaces,
 		"surface_labels": layout.SurfaceLabels,
 		"defect_group":   layout.DefectGroup,
 		"defect_columns": layout.DefectColumns,
 		"stats": gin.H{
-			"header_count": len(layout.Header),
-			"defect_count": len(formfields.DefectGroups),
-			"total_columns": len(layout.Header) + len(layout.DefectColumns),
+			"paper_column_count": len(layout.PaperColumns),
+			"header_count":       len(layout.Header),
+			"defect_count":       len(formfields.DefectGroups),
+			"defect_sub_columns": len(layout.DefectColumns),
+			"total_columns":      len(layout.PaperColumns) + len(layout.Header) + len(layout.DefectColumns),
 		},
-		"note": "不良缺陷明细下的每一项都包含凹面/凸面/双面三个子列",
+		"note": "不良缺陷明细下的每一项都包含凹面/凸面/双面三个子列；" +
+			"paper_columns 是纸质表单原有表头栏目，submitted_by/last_saved_by 等是系统留痕（两者不混用）",
 	})
 }
 
@@ -142,6 +149,8 @@ func (h *Handler) listForms(c *gin.Context) {
 		SampleSpec:    c.Query("sample_spec"),
 		SampleSize:    c.Query("sample_size"),
 		SampleSide:    c.Query("sample_side"),
+		Inspector:     c.Query("paper_inspector"),
+		Submitter:     c.Query("paper_submitter"),
 		Unit:          c.Query("unit"),
 		From:          c.Query("from"),
 		To:            c.Query("to"),

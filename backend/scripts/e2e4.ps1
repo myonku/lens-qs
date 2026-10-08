@@ -32,11 +32,13 @@ $login = J (Req "POST" "$base/api/auth/login" $null '{"username":"zhangsai","pas
 $T = $login.data.token
 Write-Output "登录: $($login.data.user.display_name)"
 
-Write-Output "`n=== 1) 字段目录（顶层栏目 + 不良缺陷明细）==="
+Write-Output "`n=== 1) 字段目录（纸质表头栏目 + 计数区栏目 + 不良缺陷明细）==="
 $fields = J (Req "GET" "$base/api/form-fields" $T)
-Write-Output "顶层栏目: $(($fields.data.header_columns | ForEach-Object { $_.label }) -join ' / ')"
+Write-Output "纸质表头栏目: $(($fields.data.paper_columns | ForEach-Object { $_.label }) -join ' / ')"
+Write-Output "计数区栏目:   $(($fields.data.header_columns | ForEach-Object { $_.label }) -join ' / ')"
 Write-Output "缺陷列数: $($fields.data.defect_group.columns.Count)   子列数: $($fields.data.defect_columns.Count)"
 Write-Output "表面维度: $(($fields.data.surfaces) -join '/')"
+Write-Output "统计: 纸质栏目=$($fields.data.stats.paper_column_count) 计数栏目=$($fields.data.stats.header_count) 缺陷列=$($fields.data.stats.defect_count) 缺陷子列=$($fields.data.stats.defect_sub_columns) 合计=$($fields.data.stats.total_columns)"
 Write-Output "前 6 个缺陷列:"
 $fields.data.defect_group.columns | Select-Object -First 6 | ForEach-Object { "  $($_.code) = $($_.label)" }
 Write-Output "前 6 个子列字段名: $(($fields.data.defect_columns | Select-Object -First 6 | ForEach-Object { $_.field }) -join ', ')"
@@ -48,7 +50,7 @@ $tpls.data.items | ForEach-Object { "  $($_.operation.code) / $($_.operation.lab
 $one = J (Req "GET" "$base/api/form-templates/一次加硬" $T)
 Write-Output "取「一次加硬」模板: 列数=$($one.data.layout.defect_columns.Count)"
 
-Write-Output "`n=== 3) 提交一张完整表单（一次加硬，含多个缺陷列）==="
+Write-Output "`n=== 3) 提交一张完整表单（纸质表头栏目 + 一次加硬 + 多个缺陷列）==="
 $body = @'
 {
   "form_no": "QS-260930-001",
@@ -59,7 +61,13 @@ $body = @'
     "sample_spec": "S2",
     "sample_size": "SM",
     "sample_side": "R",
-    "unit_text": "一厂",
+    "paper_unit_text": "一厂",
+    "paper_submitter": "王五",
+    "paper_submitted_at": "2026.9.8",
+    "paper_inspector": "张赛赛",
+    "paper_inspected_at": "2026.9.9",
+    "paper_machine_operator": "赵六",
+    "paper_handover_by": "钱七",
     "lines": [
       {
         "total_qty": 100, "qualified_qty": 96, "defect_qty": 4,
@@ -78,7 +86,8 @@ $r1 = J (Req "POST" "$base/api/forms" $T $body)
 Write-Output "action=$($r1.data.action) 表单号=$($r1.data.submission.form_no) save_count=$($r1.data.submission.save_count)"
 Write-Output "汇总: 总数=$($r1.data.submission.total_qty) 合格=$($r1.data.submission.qualified_qty) 不合格=$($r1.data.submission.defect_qty) 合格率=$($r1.data.submission.pass_rate)"
 Write-Output "完成度: is_complete=$($r1.data.is_complete) missing=$($r1.data.missing_fields -join ',')"
-Write-Output "录入人(系统用户)=$($r1.data.submission.submitted_by)"
+Write-Output "纸质栏目: 单位=$($r1.data.submission.paper_unit_text) 送检人=$($r1.data.submission.paper_submitter) 送检时间=$($r1.data.submission.paper_submitted_at) 检验人=$($r1.data.submission.paper_inspector) 检验时间=$($r1.data.submission.paper_inspected_at) 操机员=$($r1.data.submission.paper_machine_operator) 交接员=$($r1.data.submission.paper_handover_by)"
+Write-Output "系统留痕: created_by=$($r1.data.submission.created_by) submitted_by=$($r1.data.submission.submitted_by)（应为系统用户，与纸面人名不同）"
 $id = $r1.data.submission.id
 Write-Output "缺陷回读: prick=凹$($r1.data.submission.lines[0].defects.prick.concave)/凸$($r1.data.submission.lines[0].defects.prick.convex) scratch=双$($r1.data.submission.lines[0].defects.scratch.both) 法兰边凹痕=凹$($r1.data.submission.lines[0].defects.flange_recess.concave)"
 
@@ -86,7 +95,8 @@ Write-Output "`n=== 4) 分次补填（只提交部分栏目；未提交的必须
 $body2 = '{"form": {"qualified_qty": 90, "defects": {"dirt": {"convex": 3}}, "remark": "二次核对"}, "reason": "补填脏污"}'
 $r2 = J (Req "PATCH" "$base/api/forms/$id" $T $body2)
 $s2 = $r2.data.submission
-Write-Output "save_count=$($s2.save_count) 工序=$($s2.operation_code) 样品原始串=$($s2.sample_raw) 单位=$($s2.unit_text)"
+Write-Output "save_count=$($s2.save_count) 工序=$($s2.operation_code) 样品原始串=$($s2.sample_raw)"
+Write-Output "纸面栏目保持不变: 单位=$($s2.paper_unit_text) 检验人=$($s2.paper_inspector) 送检人=$($s2.paper_submitter) 交接员=$($s2.paper_handover_by)"
 Write-Output "合格品(显式给出)=$($s2.qualified_qty)  明细行数=$($s2.lines.Count)（未提交 lines，应保持 1 行）"
 Write-Output "合格率重算=$($s2.pass_rate)"
 
@@ -97,17 +107,19 @@ $diff = J (Req "GET" "$base/api/forms/$id/history/diff?from=$($hist.data.items[0
 Write-Output "差异数=$($diff.data.total)"
 $diff.data.changes | Select-Object -First 8 | ForEach-Object { "  [$($_.scope)] $($_.label): '$($_.from)' -> '$($_.to)'" }
 
-Write-Output "`n=== 6) 列表筛选（按工序与样品维度）==="
-foreach ($q in @('operation_code=一次加硬', 'sample_spec=S2', 'sample_size=SM', 'state=ACTIVE')) {
+Write-Output "`n=== 6) 列表筛选（按工序、样品维度、纸面检验人/单位）==="
+foreach ($q in @('operation_code=一次加硬', 'sample_spec=S2', 'sample_size=SM', 'state=ACTIVE', 'paper_inspector=张赛赛', 'unit=一厂')) {
   $r = J (Req "GET" "$base/api/forms?$q" $T)
   "  ?$q -> total=$($r.data.total)"
 }
 
-Write-Output "`n=== 7) 汇总统计（按工序 / 样品维度 / 不良分布）==="
+Write-Output "`n=== 7) 汇总统计（按工序 / 样品维度 / 纸面检验人 / 不良分布）==="
 $sum = J (Req "GET" "$base/api/stats/summary?group_by=operation_code" $T)
 $sum.data.groups | ForEach-Object { "  工序 $($_.key): 表单数=$($_.form_count) 总数=$($_.total_qty) 合格率=$($_.pass_rate)%" }
 $sum2 = J (Req "GET" "$base/api/stats/summary?group_by=sample_spec,sample_size" $T)
 $sum2.data.groups | ForEach-Object { "  规格/大小 $($_.key): 表单数=$($_.form_count)" }
+$sum3 = J (Req "GET" "$base/api/stats/summary?group_by=paper_inspector" $T)
+$sum3.data.groups | ForEach-Object { "  检验人 $($_.key): 表单数=$($_.form_count)" }
 $def = J (Req "GET" "$base/api/stats/defects" $T)
 Write-Output "  不良分布: 点伤=$($def.data.defects.prick.surfaces.total) 划伤=$($def.data.defects.scratch.surfaces.total) 脏污=$($def.data.defects.dirt.surfaces.total) 法兰边凹痕=$($def.data.defects.flange_recess.surfaces.total) 合计=$($def.data.grand_total)"
 $dims = J (Req "GET" "$base/api/stats/dimensions" $T)

@@ -4,6 +4,10 @@
 > 本文按**后端代码实际行为**整理，JSON 键名一律 **snake_case**。
 > 模型已按"**每道工序填自己那张表单**"重构（`forms` 一次提交 + `form_lines` 明细行 + `form_history` 快照）。
 > 旧模型（一张表单 + 多笔工序记录 + 15 个不良子项）已废弃，**不要**再按旧模型对接。
+> 表单字段分三类，**必须分清且不可混用**：**纸质表单表头栏目**（`paper_*`，纸面上手写的值，7 栏目 / 8 字段）、**计数区栏目**（`operation_code` / `total_qty` / `qualified_qty` / `defect_qty` / `pass_rate`，5 个）、**不良缺陷明细**（35 列 × 凹/凸/双 = 105 子列）。
+> 合计 **117 个可填列**（`GET /api/form-fields` 的 `stats.total_columns = 117`）。
+> 系统留痕（`created_by` / `submitted_by` / `submitted_at` / `last_saved_by` / `last_saved_at` / `save_count`）存的是**系统登录用户 id**，与纸面上的送检人 / 检验人（`paper_submitter` / `paper_inspector`）**没有任何关系**，不可混用（B-17，见 §6.1）。
+> `unit_id` / `unit_text` 是 `paper_unit_id` / `paper_unit_text` 的**已废弃兼容别名**：数据库 `forms` 表里**已无这两列**（迁移 `0004_paper_fields` 删除），只存在于接口层（见 §3.5）。
 
 ---
 
@@ -167,7 +171,9 @@
 字段目录的**唯一事实来源**是 `internal/formfields`（后端用它同时做：前端渲染、校验白名单、统计映射、数据库列生成）。
 完整目录可直接取：`GET /api/form-fields`（全局）或 `GET /api/form-templates`（按工序带 layout）。
 
-### 2.1 顶层栏目（5 个）
+### 2.1 计数区栏目（5 个）
+
+> 这是纸质表单的**计数区**（检验工序 + 三个合计 + 合格率）。纸质表单**原有的表头栏目**（单位 / 送检人 / 送检时间 / 检验人 / 检验时间 / 操机员 / 交接员）另见 §2.2，两组栏目**并存且不混用**。
 
 | 顺序 | 提交用字段名 | 字段目录里的 `code` | 中文名 | `kind` | 服务端计算 |
 |---|---|---|---|---|---|
@@ -181,7 +187,27 @@
 > 而**提交表单时用的字段名**、以及 `GET /api/forms/{id}` 响应里的字段名是 `operation_code`。渲染时可用 `operation` 定位列，提交时请写 `operation_code`（兼容写法 `operation` 也接受，见 §5.6）。
 > `pass_rate` 标记 `computed: true`（服务端可由 合格品/检验总数 推导）。**提交 `pass_rate` 会覆盖服务端计算值**，除非该次请求显式给出它。
 
-### 2.2 不良缺陷明细：35 列 × 3 表面 = 105 个子列
+### 2.2 纸质表头栏目（7 栏目 / 8 字段）
+
+纸质表单**原有的表头栏目全部保留**（需求 B-11），字段名统一用 `paper_` 前缀。这些列存的是**纸面上手写的值**，**不是系统用户**：
+
+| 顺序 | 栏目（纸面名称） | 提交用字段名 | 字段目录里的 `code` | 中文名 | `kind` | 说明 |
+|---|---|---|---|---|---|---|
+| 1 | 单位 | `paper_unit_id` | `paper_unit_id` | 单位 | `text` | 单位字典 id（与 `paper_unit_text` 二者取一即可） |
+| 1 | 单位 | `paper_unit_text` | （不在 `paper_columns` 数组里） | 单位 | `text` | 单位原文 |
+| 2 | 送检人 | `paper_submitter` | `paper_submitter` | 送检人 | `text` | **纸面手写人名**，非系统用户 |
+| 3 | 送检时间 | `paper_submitted_at` | `paper_submitted_at` | 送检时间 | `text` | **按录入原文存字符串**（如 `2026.9.8`），服务端**不做日期格式假设/校验** |
+| 4 | 检验人 | `paper_inspector` | `paper_inspector` | 检验人 | `text` | **纸面手写人名**，非系统用户 |
+| 5 | 检验时间 | `paper_inspected_at` | `paper_inspected_at` | 检验时间 | `text` | 同上，字符串原文 |
+| 6 | 操机员 | `paper_machine_operator` | `paper_machine_operator` | 操机员 | `text` | 纸面手写人名 |
+| 7 | 交接员 | `paper_handover_by` | `paper_handover_by` | 交接员 | `text` | 纸面手写人名 |
+
+> 纸质表头写的是 **7 个"栏目"**；「单位」有 `id` / `text` 两列，所以一共是 **8 个字段名**。
+> `GET /api/form-fields` 里的 `paper_columns` 是 **7 项**（单位项只给 `code = "paper_unit_id"`；`paper_unit_text` 不在该数组里，但**可以正常提交**），统计字段 `paper_column_count = 7`。
+> ⚠️ **不要与系统留痕混用**：`paper_*` 是纸面上写的人名与时间（可以是任意手写文字，甚至同名的临时工），而 `submitted_by` / `last_saved_by` / `created_by` 存的是**系统登录用户 id**，两者各存各的、互不覆盖（B-17，见 §6.1）。
+> ⚠️ 旧写法 `unit_id` / `unit_text` **仍可提交**，会被归一为 `paper_unit_id` / `paper_unit_text`；它们只是**已废弃的兼容别名**，`forms` 表里**已经没有这两列**（迁移 `0004_paper_fields` 已 `DROP COLUMN`），只存在于接口层。新代码请一律用 `paper_unit_*`（归一规则见 §3.5）。
+
+### 2.3 不良缺陷明细：35 列 × 3 表面 = 105 个子列
 
 **每一项不良缺陷列都包含 凹面 / 凸面 / 双面 三个计数子列**，表面维度顺序固定为 `concave` → `convex` → `both`（与纸质表单列顺序一致）。
 子列的扁平字段名规则：`<缺陷code>_<表面>`，例如 `prick_concave`。
@@ -225,9 +251,11 @@
 | 34 | 内挂流/挂流 | `inner_flow_glue` | `inner_flow_glue_concave` | `inner_flow_glue_convex` | `inner_flow_glue_both` |
 | 35 | 法兰边凹痕 | `flange_recess` | `flange_recess_concave` | `flange_recess_convex` | `flange_recess_both` |
 
-合计：顶层栏目 **5** + 缺陷列 **35 × 3 = 105** = **110** 个可提交字段。
+合计：**117 个可填列** = 纸质表头栏目 **7**（8 个字段名，单位有 `id` / `text` 两列）+ 计数区栏目 **5** + 缺陷列 **35 × 3 = 105**。
 
-### 2.3 如何用 `GET /api/form-templates` 直接渲染
+> `GET /api/form-fields` 的 `stats` 里：`paper_column_count = 7`、`header_count = 5`、`defect_count = 35`、`defect_sub_columns = 105`、`total_columns = 117`。
+
+### 2.4 如何用 `GET /api/form-templates` 直接渲染
 
 `GET /api/form-templates` 返回**每个已登记工序**一条记录，每条记录里已经内嵌了可直接渲染的 `layout`：
 
@@ -252,7 +280,7 @@
             { "field": "prick_concave", "defect": "prick", "label": "点伤", "surface": "concave", "header": "点伤-凹面" }
           ]
         },
-        "field_count": 110
+        "field_count": 117
       }
     ],
     "total": 3,
@@ -268,13 +296,15 @@
    - 若该工序在 `items` 里 → 直接用它的 `layout`；
    - 若不在（**未登记工序**，见 §8.2）→ 再调 `GET /api/form-templates/{code}`，服务端会返回该编码的回退模板（`label` = 编码本身、`sort_no` = 100），`layout` 仍是完整全列。
 3. 渲染规则：
-   - 先渲染 `layout.header_columns`（5 个顶层栏目；`computed: true` 的 `pass_rate` 建议只读展示）。
+   - **先渲染纸质表头栏目**：`layout` 里**没有** `paper_columns`，该块要取 `GET /api/form-fields` 的 `paper_columns`（7 项，见 §2.2），按顺序渲染在表单最上方；`paper_unit_text` 虽不在数组里，但同样要给出输入格（或只给一个"单位"输入格，提交时写 `paper_unit_text`）。
+   - 再渲染 `layout.header_columns`（5 个计数区栏目；`computed: true` 的 `pass_rate` 建议只读展示）。
    - 再渲染 `layout.defect_group.title`（"不良缺陷明细"）作为分组标题，用 `layout.defect_columns`（105 项，**已按"列 → 凹/凸/双"展开且顺序固定**）直接顺序渲染输入格；每格的 `header` 就是现成的表头文案（如 `点伤-凹面`），`field` 就是提交时的字段名。
    - 或按纸质表头渲染：用 `layout.defect_group.columns`（35 项）做列头，每列下用 `layout.surfaces` + `layout.surface_labels` 展开 3 个子格，字段名 = `<code>_<surface>`。
-4. 提交时字段名照抄 `field` / 顶层 `code`（`operation` 请映射为 `operation_code`，见 §2.1 的提示）。
+4. 提交时字段名照抄 `field` / 顶层 `code`（`operation` 请映射为 `operation_code`，见 §2.1 的提示；纸质栏目就用 `paper_*` 原名）。
 5. 也支持"只提交本次改动的格子"（三态合并，见 §3.5）。
 
 > 说明：`layout` 里的 `operation` 键出现在 `GET /api/form-templates`、`GET /api/form-templates/{code}` 与 `GET /api/forms/{id}` 的 `layout` 中；`GET /api/form-fields` 的返回**不含** `operation`。
+> `paper_columns` **只**出现在 `GET /api/form-fields` 的返回里（`layout` 对象里没有这一块），前端渲染纸质表头栏目请从该接口取。
 
 ---
 
@@ -310,7 +340,7 @@
 | **V-7** | 唯一性（`form_no` 唯一；`form_lines(form_id, seq)` 唯一） | **硬阻断** | **不适用 `enforce`，永远阻断** | 由数据库唯一索引保证；冲突时由 handler 映射为 **409** `conflict`，message 形如 `"表单号已存在: <form_no>（V-7：表单号唯一）"` 或 `"明细行序号重复（V-7：(form_id, seq) 唯一）"` |
 | **V-8** | 样品信息与参考部件号清单不匹配 | `warning`（语义） | **否，任何模式都不阻断** | ⚠️ **当前实现不会产生 issue**：不匹配只在 `POST /api/sample/parse` 的 `matched` / `unmatched_reason` / `note` 里体现，保存接口不做该判定，也不影响落库 |
 | **V-9** | 样品结构化项缺失（当前判据：`sample_project` 为空） | `warning` | **否，任何模式都不阻断** | 属表头级校验；message 为 `"样品信息的「项目」（M1/M2 等）尚未填写"` |
-| **V-10** | 表单栏目缺失 | `warning` | **否，任何模式都不阻断** | 仅当"已经开始填了"（`operation_code` / `total_qty` / `qualified_qty` / `defect_qty` 非 0、或 `sample_raw` 非空、或已有明细行）才提示，避免空表单噪声 |
+| **V-10** | 表单栏目缺失（判据见 §3.4：`operation_code`、单位、`paper_inspector`、`sample_raw`、`lines` 共 5 项） | `warning` | **否，任何模式都不阻断** | 仅当"已经开始填了"（`operation_code` / `total_qty` / `qualified_qty` / `defect_qty` 非 0、或 `sample_raw` 非空、或已有明细行）才提示，避免空表单噪声 |
 
 ### 3.3 「任何模式都不阻断」的规则汇总
 
@@ -319,26 +349,44 @@
 
 ### 3.4 `missing_fields` / `is_complete` 的判定口径
 
-`MissingFields` 依次检查 4 项，缺失即加入数组：
+`MissingFields` 依次检查 **5 项**，缺失即加入数组：
 
 | 顺序 | 字段 | 判定为空的条件 |
 |---|---|---|
 | 1 | `operation_code` | `TrimSpace` 后为空 |
-| 2 | `unit_id` | `unit_id` 与 `unit_text` **都**为空（这个键代表"单位"整体，缺失时字段名仍报 `unit_id`） |
-| 3 | `sample_raw` | `TrimSpace` 后为空 |
-| 4 | `lines` | `len(lines) == 0` |
+| 2 | `paper_unit_id` | 单位整体为空：`paper_unit_id`、`paper_unit_text`、`unit_id`、`unit_text` **四者都**为空（这个键代表"单位"这一栏目，缺失时**报的字段名是 `paper_unit_id`**） |
+| 3 | `paper_inspector` | `TrimSpace` 后为空（纸面「检验人」未写） |
+| 4 | `sample_raw` | `TrimSpace` 后为空 |
+| 5 | `lines` | `len(lines) == 0` |
 
 `is_complete = (len(missing_fields) == 0)`。
+
+> 注意：**只**检查上面这 5 项。`paper_submitter`（送检人）、`paper_submitted_at`（送检时间）、`paper_inspected_at`（检验时间）、`paper_machine_operator`（操机员）、`paper_handover_by`（交接员）为空**不会**进 `missing_fields`，也不影响 `is_complete`。
+> 也**不会**把纸面人名与系统用户混起来判断：`submitted_by` / `last_saved_by` 有值不代表 `paper_inspector` 已填（B-17）。
 
 ### 3.5 字段级合并的三态语义
 
 保存接口的 `form` 对象是**字段级补丁**，不是整体覆盖。前端只需提交"这次要改的字段"。
+**全部 `paper_*` 纸质栏目与计数区栏目一样支持三态语义**（`paper_unit_id` / `paper_unit_text` / `paper_submitter` / `paper_submitted_at` / `paper_inspector` / `paper_inspected_at` / `paper_machine_operator` / `paper_handover_by`）。
 
-| 情况 | 字符串类字段（`sample_raw` / `sample_project` / `unit_id` / `operation_text` / `remark` …） | 整数类字段（`total_qty` / `qualified_qty` / `defect_qty`） | 浮点字段（`pass_rate`） | 缺陷子格（`defects` 里的值） |
+| 情况 | 字符串类字段（`sample_raw` / `sample_project` / `paper_unit_id` / `paper_inspector` / `paper_submitted_at` / `operation_text` / `remark` …） | 整数类字段（`total_qty` / `qualified_qty` / `defect_qty`） | 浮点字段（`pass_rate`） | 缺陷子格（`defects` 里的值） |
 |---|---|---|---|---|
 | **键不存在** | 不改，保持原值 | 不改，保持原值 | 不改，保持原值 | 不改，保持原值 |
 | **显式 `null`** | **清空**（指针对字段置 `null`；`sample_raw` 这类非空字段置空串） | **置 0**（整数没有"空"的表示，服务端把 `null` 当 0 写入） | **清空**（置 `null`，之后若本次未显式给 `pass_rate` 会按 合格品/检验总数 重算） | **置 0**（等价于删除该格；若整列三格都被清空，该列键从结果里移除） |
-| **有值** | 写入原值（服务端不做枚举校验） | 写入该整数 | 写入该数值，**并阻止本轮的自动重算** | 写入该整数 |
+| **有值** | 写入原值（服务端不做枚举校验，也不做日期格式校验） | 写入该整数 | 写入该数值，**并阻止本轮的自动重算** | 写入该整数 |
+
+**单位字段的兼容与归一（`unit_id` / `unit_text` 已废弃）**：
+
+| 请求里写了什么 | 结果 |
+|---|---|
+| 只写 `paper_unit_id` / `paper_unit_text` | 直接写入 `paper_unit_id` / `paper_unit_text`（**推荐写法**） |
+| 只写 `unit_id` / `unit_text` | 归一写入 `paper_unit_id` / `paper_unit_text`（旧写法仍可提交，不会 400） |
+| **同时**写 `paper_unit_id` 与 `unit_id`（或 `paper_unit_text` 与 `unit_text`） | **以 `paper_unit_*` 为准**，同名的 `unit_*` 被忽略（两者**按列独立判定**：`paper_unit_id` 与 `paper_unit_text` 各自只看自己的 `paper_*` 有没有出现） |
+| `unit_id: null`（且未写 `paper_unit_id`） | 清空 `paper_unit_id` |
+
+- 读响应时 `unit_id` / `unit_text` 作为**只读别名**回显 `paper_unit_id` / `paper_unit_text` 的值（任何时候都与 `paper_*` 相同，写入无效）。
+- 数据库 `forms` 表里**已经没有** `unit_id` / `unit_text` 列（迁移 `0004_paper_fields` 删掉了），它们**只存在于接口层**。
+- **前端请优先用 `paper_unit_id` / `paper_unit_text`**，`unit_*` 只用于兼容老版本前端。
 
 **`defects` 的特殊规则**：
 
@@ -389,7 +437,7 @@
 |---|---|---|---|---|
 | GET | `/api/form-templates` | 工序表单模板列表 + 每个工序的完整 layout | 是 | 否 |
 | GET | `/api/form-templates/{code}` | 单个工序的模板与 layout（未登记工序走回退） | 是 | 否 |
-| GET | `/api/form-fields` | 字段目录（5 顶层栏目 + 35 缺陷列 × 3 表面） | 是 | 否 |
+| GET | `/api/form-fields` | 字段目录（纸质表头栏目 7 + 计数区 5 + 35 缺陷列 × 3 表面 = 117 列） | 是 | 否 |
 
 ### 4.4 表单提交（核心）
 
@@ -637,6 +685,15 @@
   "code": "ok",
   "message": "",
   "data": {
+    "paper_columns": [
+      { "code": "paper_unit_id", "label": "单位", "kind": "text", "computed": false },
+      { "code": "paper_submitter", "label": "送检人", "kind": "text", "computed": false },
+      { "code": "paper_submitted_at", "label": "送检时间", "kind": "text", "computed": false },
+      { "code": "paper_inspector", "label": "检验人", "kind": "text", "computed": false },
+      { "code": "paper_inspected_at", "label": "检验时间", "kind": "text", "computed": false },
+      { "code": "paper_machine_operator", "label": "操机员", "kind": "text", "computed": false },
+      { "code": "paper_handover_by", "label": "交接员", "kind": "text", "computed": false }
+    ],
     "header_columns": [
       { "code": "operation", "label": "检验工序", "kind": "text", "computed": false },
       { "code": "total_qty", "label": "检验总数", "kind": "int", "computed": false },
@@ -658,13 +715,20 @@
       { "field": "prick_convex", "defect": "prick", "label": "点伤", "surface": "convex", "header": "点伤-凸面" },
       { "field": "prick_both", "defect": "prick", "label": "点伤", "surface": "both", "header": "点伤-双面" }
     ],
-    "stats": { "header_count": 5, "defect_count": 35, "total_columns": 110 },
-    "note": "不良缺陷明细下的每一项都包含凹面/凸面/双面三个子列"
+    "stats": {
+      "paper_column_count": 7,
+      "header_count": 5,
+      "defect_count": 35,
+      "defect_sub_columns": 105,
+      "total_columns": 117
+    },
+    "note": "不良缺陷明细下的每一项都包含凹面/凸面/双面三个子列；paper_columns 是纸质表单原有表头栏目，submitted_by/last_saved_by 等是系统留痕（两者不混用）"
   }
 }
 ```
 
-> 实际返回的 `defect_group.columns` 是完整 **35** 项、`defect_columns` 是完整 **105** 项（上例只截了前几项示意）。
+> 实际返回的 `paper_columns` 是 **7** 项（单位项只给 `paper_unit_id`；`paper_unit_text` 不在数组里但可提交）、`defect_group.columns` 是完整 **35** 项、`defect_columns` 是完整 **105** 项（上例只截了前几项示意）。
+> `total_columns = 7 + 5 + 105 = 117`。`note` 的原文见上（提示纸质栏目与系统留痕不混用）。
 
 #### `GET /api/form-templates`（需登录）
 
@@ -673,8 +737,8 @@
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `operation` | object | 模板：`{code, label, allowed_fields?, sort_no, note?}` |
-| `layout` | object | 完整列布局（含 `operation` / `header_columns` / `defect_group` / `surfaces` / `surface_labels` / `defect_columns`） |
-| `field_count` | int | `5 + 105 = 110` |
+| `layout` | object | 完整列布局（含 `operation` / `header_columns` / `defect_group` / `surfaces` / `surface_labels` / `defect_columns`；**不含** `paper_columns`，纸质表头栏目请从 `GET /api/form-fields` 取） |
+| `field_count` | int | `7 + 5 + 105 = 117` |
 
 `operation.allowed_fields` **只在非空时出现**（当前内置模板全部为空，即"开放全部列"）。
 
@@ -689,9 +753,9 @@
                     "surfaces": ["concave", "convex", "both"],
                     "surface_labels": { "concave": "凹面", "convex": "凸面", "both": "双面" },
                     "defect_columns": [ "..." ] },
-        "field_count": 110 },
-      { "operation": { "code": "一次加硬", "label": "一次加硬", "sort_no": 10 }, "layout": { "..." : "..." }, "field_count": 110 },
-      { "operation": { "code": "二次加硬", "label": "二次加硬", "sort_no": 20 }, "layout": { "..." : "..." }, "field_count": 110 }
+        "field_count": 117 },
+      { "operation": { "code": "一次加硬", "label": "一次加硬", "sort_no": 10 }, "layout": { "..." : "..." }, "field_count": 117 },
+      { "operation": { "code": "二次加硬", "label": "二次加硬", "sort_no": 20 }, "layout": { "..." : "..." }, "field_count": 117 }
     ],
     "total": 3,
     "note": "每个工序对应一张表单；不同工序所填内容不同，前端可按工序渲染对应列。未登记的工序按通用模板处理（开放全部列，不校验必填）"
@@ -729,8 +793,10 @@
 | `keyword` | string | — | 模糊匹配 **`form_no` 或 `sample_raw`** |
 | `operation_code` | string | — | 精确匹配 |
 | `sample_project` / `sample_model` / `sample_spec` / `sample_size` / `sample_side` | string | — | 精确匹配 |
-| `unit` | string | — | 精确匹配 `COALESCE(unit_text, unit_id)` |
-| `from` | string | — | `created_at >= from`（**注意用的是 `created_at`，不是 `submitted_at`**） |
+| `paper_inspector` | string | — | 精确匹配纸面「检验人」（表列 `paper_inspector`；**传手写人名**，不是系统用户 id） |
+| `paper_submitter` | string | — | 精确匹配纸面「送检人」（表列 `paper_submitter`） |
+| `unit` | string | — | 精确匹配 `COALESCE(paper_unit_text, paper_unit_id)`（优先比 `paper_unit_text`） |
+| `from` | string | — | `created_at >= from`（**注意用的是 `created_at`，不是纸面送检时间 `paper_submitted_at`**） |
 | `to` | string | — | `created_at <= to + "T23:59:59Z"`（服务端自动拼时间后缀） |
 | `incomplete` | string | — | 仅当**恰好等于 `"true"`** 时只看 `is_complete = 0` |
 
@@ -752,8 +818,17 @@
         "sample_spec": "S1",
         "sample_size": "MD",
         "sample_side": "R",
+        "paper_unit_id": null,
+        "paper_unit_text": "片",
+        "paper_submitter": "王五",
+        "paper_submitted_at": "2026.9.8",
+        "paper_inspector": "李四",
+        "paper_inspected_at": "2026.9.9",
+        "paper_machine_operator": "赵六",
+        "paper_handover_by": "钱七",
         "unit_id": null,
         "unit_text": "片",
+        "created_by": "u_01H...",
         "submitted_by": "u_01H...",
         "submitted_at": "2026-02-06T08:20:00Z",
         "last_saved_by": "u_01H...",
@@ -777,6 +852,8 @@
 ```
 
 > ⚠️ 列表接口返回的每一项 **`lines` 恒为空数组 `[]`**（列表查询只读 `forms` 表，不联查明细）。**要拿明细必须调 `GET /api/forms/{id}`**。
+> ⚠️ 上例里 `paper_submitter`（纸面送检人「王五」）与 `submitted_by`（系统录入人 `u_01H...`）是**两个不同的东西**，`paper_*` 空值时按 `omitempty` 不出现。
+> ⚠️ `unit_id` / `unit_text` 是 `paper_unit_id` / `paper_unit_text` 的**只读别名**（值恒等于 `paper_*`），已废弃，新前端请忽略它们。
 
 典型错误：`401`（未登录）。
 
@@ -804,8 +881,15 @@
 operation_code, operation, operation_text,
 total_qty, qualified_qty, defect_qty, pass_rate,
 sample_raw, sample_project, sample_model, sample_spec, sample_size, sample_side,
+paper_unit_id, paper_unit_text,
+paper_submitter, paper_submitted_at,
+paper_inspector, paper_inspected_at,
+paper_machine_operator, paper_handover_by,
 unit_id, unit_text, remark, defects, lines
 ```
+
+- 上面 **8 个 `paper_*`** 是纸质表单原有的表头栏目（见 §2.2），与计数区栏目同样可写。
+- `unit_id` / `unit_text` 是**已废弃的兼容别名**（归一为 `paper_unit_*`，同时给出时以 `paper_*` 为准，见 §3.5）；数据库里没有这两列。
 
 外加 **105 个扁平缺陷字段名**（如 `prick_concave`）也合法。
 `lines[i]` 内允许的键：`seq, total_qty, qualified_qty, defect_qty, defects, remark`（外加 105 个扁平缺陷字段名）。
@@ -815,8 +899,8 @@ unit_id, unit_text, remark, defects, lines
 1. **解析补丁**：未知键 → **400** `"存在无法识别的字段: xxx, yyy"`，`details = {"unknown_fields": [...], "hint": "列清单见 GET /api/form-fields"}`。
 2. **定位或创建**：`form_no` 空白 → 自动生成 `{YYMMDD}-{3位当日流水}`（如 `260206-001`；取当日已有 `form_no` 最大值 +1）；否则按 `form_no` 查——**不存在则创建**（`save_count = 1`，`state = ACTIVE`），**存在则复用并合并**。
 3. **乐观锁**：非新建且传了 `expected_save_count` 且与当前 `save_count` 不等 → **409**。
-4. **应用补丁**（字段级合并），`save_count` 自增（新建为 1）。
-5. **留痕**：`submitted_by` / `submitted_at` 仅在为空时写入（首次录入人）；`last_saved_by` / `last_saved_at` 每次覆盖为当前用户/时间。
+4. **应用补丁**（字段级合并），`save_count` 自增（新建为 1）；`paper_*` 按同一套三态语义写入（与纸面手写值一一对应，服务端不做格式/人名校验）。
+5. **系统留痕**：`created_by` 仅在为空时写入（首次创建人）；`submitted_by` / `submitted_at` 仅在为空时写入（首次录入人/时间）；`last_saved_by` / `last_saved_at` 每次覆盖为当前用户/时间。**这些字段全部取当前登录用户的 id，与 `paper_submitter` / `paper_inspector` 等纸面人名无关，也不互相覆盖**（B-17）。
 6. **明细**：`lines` 出现 → 整笔替换；否则沿用原明细。
 7. **汇总**：
    - 若结果有明细 → 表头 `total_qty` / `qualified_qty` / `defect_qty` 默认按明细行**求和重算**；但本次补丁里**显式给出**的那一项**优先**（不覆盖）。三者独立判定。
@@ -834,7 +918,13 @@ unit_id, unit_text, remark, defects, lines
     "submission": {
       "id": "f_01HZZ...", "form_no": "260206-001", "operation_code": "一次加硬", "operation_text": null,
       "sample_raw": "S1-MD-R-VID2", "sample_project": "M1", "sample_model": "VID2", "sample_spec": "S1",
-      "sample_size": "MD", "sample_side": "R", "unit_id": null, "unit_text": "片",
+      "sample_size": "MD", "sample_side": "R",
+      "paper_unit_id": null, "paper_unit_text": "片",
+      "paper_submitter": "王五", "paper_submitted_at": "2026.9.8",
+      "paper_inspector": "李四", "paper_inspected_at": "2026.9.9",
+      "paper_machine_operator": "赵六", "paper_handover_by": "钱七",
+      "unit_id": null, "unit_text": "片",
+      "created_by": "u_01H...",
       "submitted_by": "u_01H...", "submitted_at": "2026-02-06T08:20:00Z",
       "last_saved_by": "u_01H...", "last_saved_at": "2026-02-06T08:20:00Z", "save_count": 1,
       "total_qty": 100, "qualified_qty": 95, "defect_qty": 5, "pass_rate": 95,
@@ -853,6 +943,7 @@ unit_id, unit_text, remark, defects, lines
 
 - `action` 取值：**`create_form`**（新建）/ **`save_form`**（合并到已有表单）。
 - `issues` / `warnings` / `errors` 为 `httpx.Issue` 数组；成功时通常为空数组（warn 模式下可能带 warning）。
+- 上例刻意让**纸面人名**（`paper_submitter`「王五」、`paper_inspector`「李四」…）与**系统留痕**（`created_by` / `submitted_by` / `last_saved_by` = `u_01H...`）并存：前者是手写文字，后者是登录用户 id，任何时候都不会互相写入。
 
 **典型错误**：
 
@@ -885,6 +976,7 @@ unit_id, unit_text, remark, defects, lines
 响应 200：结构与 `POST /api/forms` 的 `data` 相同（`action` 为 `save_form`）。
 
 **兼容写法**：`form` 里既接受 `operation_code`，也接受 `operation`（后者是兼容别名）。若两者都出现，**`operation_code` 优先**。
+同理，单位既接受正式的 `paper_unit_id` / `paper_unit_text`，也接受已废弃的 `unit_id` / `unit_text`；**同时出现时以 `paper_*` 为准**（见 §3.5）。
 
 **为什么 `{id}` 里也能填表单号？** `GET /api/forms/{id}` 与 `GET /api/forms/{id}/history*` 在按 ID 查不到时会**回退按表单号查**；但 `PATCH` / `void` **只按 ID**，传表单号会 404。
 
@@ -943,7 +1035,13 @@ unit_id, unit_text, remark, defects, lines
     "submission": {
       "id": "f_01HZZ...", "form_no": "260206-001", "operation_code": "一次加硬", "operation_text": null,
       "sample_raw": "S1-MD-R-VID2", "sample_project": "M1", "sample_model": "VID2", "sample_spec": "S1",
-      "sample_size": "MD", "sample_side": "R", "unit_id": null, "unit_text": "片",
+      "sample_size": "MD", "sample_side": "R",
+      "paper_unit_id": null, "paper_unit_text": "片",
+      "paper_submitter": "王五", "paper_submitted_at": "2026.9.8",
+      "paper_inspector": "李四", "paper_inspected_at": "2026.9.9",
+      "paper_machine_operator": "赵六", "paper_handover_by": "钱七",
+      "unit_id": null, "unit_text": "片",
+      "created_by": "u_01H...",
       "submitted_by": "u_01H...", "submitted_at": "2026-02-06T08:20:00Z",
       "last_saved_by": "u_01H...", "last_saved_at": "2026-02-06T09:05:00Z", "save_count": 2,
       "total_qty": 100, "qualified_qty": 96, "defect_qty": 4, "pass_rate": 96,
@@ -964,6 +1062,7 @@ unit_id, unit_text, remark, defects, lines
 ```
 
 > 明细里 `defects` 只包含**非 0** 的格子（数据库里 0 与"未填"都表现为缺少键）；整行都没有非 0 缺陷时 `defects` 键**整个不出现**（`omitempty`）。
+> 响应里 `paper_*`（纸面手写值）与 `created_by` / `submitted_by` / `submitted_at` / `last_saved_by` / `last_saved_at` / `save_count`（系统留痕）**并存**：`paper_*` 为 `null` 时按 `omitempty` 不出现，系统留痕由服务端写入（见 §6.1）。
 
 典型错误：`404 not_found` `"表单提交不存在: <id>"`。
 
@@ -1053,12 +1152,13 @@ GET /api/forms/f_01HZZ.../history/diff?from=h_01HZZ...&to=current
     "from_save_count": 1,
     "to_save_count": 2,
     "changes": [
+      { "scope": "submission", "field": "paper_inspector", "label": "检验人", "from": "李四", "to": "王小明" },
       { "scope": "submission", "field": "qualified_qty", "label": "合格品", "from": 95, "to": 96 },
       { "scope": "submission", "field": "pass_rate", "label": "合格率", "from": 95, "to": 96 },
       { "scope": "submission", "field": "save_count", "label": "save_count", "from": 1, "to": 2 },
       { "scope": "line", "field": "prick_concave", "label": "点伤-凹面", "index": 1, "from": 1, "to": 3 }
     ],
-    "total": 4
+    "total": 5
   }
 }
 ```
@@ -1069,13 +1169,14 @@ GET /api/forms/f_01HZZ.../history/diff?from=h_01HZZ...&to=current
 |---|---|---|
 | `scope` | string | `submission`（表头级）/ `line`（明细行级） |
 | `field` | string | 字段名：表头栏目名、`lines`（整行增删）、或扁平缺陷列名 |
-| `label` | string | 中文名（`omitempty`）；顶层栏目或缺陷列会给出，未识别时可能缺失 |
+| `label` | string | 中文名（`omitempty`）；纸质表头栏目 / 计数区栏目 / 缺陷列会给出，未识别时可能缺失 |
 | `index` | int | **仅 `scope = "line"`** 时有效，**1 基**行号（`omitempty`） |
 | `from` / `to` | any | 旧值 / 新值，可为 `null`（表示该侧不存在） |
 
 **比较口径**：
 
-- 表头级比较这 20 个字段：`operation_code`、`operation_text`、`total_qty`、`qualified_qty`、`defect_qty`、`pass_rate`、`sample_raw`、`sample_project`、`sample_model`、`sample_spec`、`sample_size`、`sample_side`、`unit_id`、`unit_text`、`remark`、`is_complete`、`missing_fields`、`save_count`、`last_saved_by`、`last_saved_at`。
+- 表头级比较这 **28** 个字段：`operation_code`、`operation_text`、`total_qty`、`qualified_qty`、`defect_qty`、`pass_rate`、`sample_raw`、`sample_project`、`sample_model`、`sample_spec`、`sample_size`、`sample_side`、`paper_unit_id`、`paper_unit_text`、`paper_submitter`、`paper_submitted_at`、`paper_inspector`、`paper_inspected_at`、`paper_machine_operator`、`paper_handover_by`、`remark`、`is_complete`、`missing_fields`、`save_count`、`submitted_by`、`submitted_at`、`last_saved_by`、`last_saved_at`。
+  （注意：**不**比较 `unit_id` / `unit_text` 别名，也**不**比较 `created_by` / `id` / `form_no` / `state`。）
 - 明细按**数组位置**配对比较（不是按 `id`/`seq`）；一侧多出行时该行报一条 `field = "lines"`、`from`/`to` 中一侧为 `null` 的变更，摘要文案形如 `"检验总数 100 / 合格品 95 / 不合格品 5"`。
 - 缺陷列逐格（105 格）比较；"未填"与 `0` 都按 0 处理，所以**不会**因为"从 null 变成 0"报变更。
 - 注意 `last_saved_at` / `save_count` / `is_complete` 等**服务端维护字段也会进入差异**，前端展示时建议按需过滤。
@@ -1208,7 +1309,7 @@ GET /api/forms/f_01HZZ.../history/diff?from=h_01HZZ...&to=current
 {
   "code": "ok", "message": "",
   "data": {
-    "items": [ { "id": "f_01H...", "form_no": "260206-003", "operation_code": "一次加硬", "sample_raw": "某段无法拆解的原文", "is_complete": false, "missing_fields": ["unit_id"], "state": "ACTIVE", "created_at": "2026-02-06T09:00:00Z", "updated_at": "2026-02-06T09:00:00Z", "lines": [] } ],
+    "items": [ { "id": "f_01H...", "form_no": "260206-003", "operation_code": "一次加硬", "sample_raw": "某段无法拆解的原文", "is_complete": false, "missing_fields": ["paper_unit_id", "paper_inspector"], "state": "ACTIVE", "created_at": "2026-02-06T09:00:00Z", "updated_at": "2026-02-06T09:00:00Z", "lines": [] } ],
     "total": 1,
     "note": "这些表单的样品信息尚未拆解出「项目」等结构化项；不影响保存，仅供人工核对补录"
   }
@@ -1357,11 +1458,11 @@ GET /api/forms/f_01HZZ.../history/diff?from=h_01HZZ...&to=current
 
 ---
 
-## 5A. 两个完整场景示例
+## 5A. 三个完整场景示例
 
-### 场景一：某工序现场录入一张表单（含若干缺陷列）
+### 场景一：某工序现场**按纸质表单**录入（全部 7 个纸质栏目 + 若干缺陷列）
 
-现场：一次加硬工序，样品原文 `S1-MD-R-VID2`，检验 100 片，合格 95 片，不合格 5 片，其中点伤凹面 1、点伤双面 2、划伤凸面 1、脏污凹面 1。
+现场：一次加硬工序，纸质表单上写着 —— 单位「片」（字典 id `un_01H...`）、送检人「王五」、送检时间「2026.9.8」、检验人「李四」、检验时间「2026.9.9」、操机员「赵六」、交接员「钱七」；样品原文 `S1-MD-R-VID2`；检验 100 片，合格 95 片，不合格 5 片，其中点伤凹面 1、点伤双面 2、划伤凸面 1、脏污凹面 1。操作人是系统用户 `u_01H...`（张三）。
 
 **第 1 步（可选）：解析样品信息**
 
@@ -1388,16 +1489,25 @@ X-Idempotency-Key: 7f3c1e0a-9b2d-4c11-8f0e-1a2b3c4d5e6f
 {
   "operation_code": "一次加硬",
   "enforce": "warn",
-  "reason": "现场首件录入",
+  "reason": "现场按纸质表单首件录入",
   "form": {
     "operation_text": "一次加硬",
+
+    "paper_unit_id": "un_01H...",
+    "paper_unit_text": "片",
+    "paper_submitter": "王五",
+    "paper_submitted_at": "2026.9.8",
+    "paper_inspector": "李四",
+    "paper_inspected_at": "2026.9.9",
+    "paper_machine_operator": "赵六",
+    "paper_handover_by": "钱七",
+
     "sample_raw": "S1-MD-R-VID2",
     "sample_project": "M1",
     "sample_model": "VID2",
     "sample_spec": "S1",
     "sample_size": "MD",
     "sample_side": "R",
-    "unit_text": "片",
     "lines": [
       {
         "seq": 1,
@@ -1417,8 +1527,9 @@ X-Idempotency-Key: 7f3c1e0a-9b2d-4c11-8f0e-1a2b3c4d5e6f
 ```
 
 > 也可以把 `defects` 写成扁平形式：`"prick_concave": 1, "prick_both": 2, "scratch_convex": 1, "dirt_concave": 1`，效果相同。
+> 纸面时间**按原文传字符串**（`"2026.9.8"`），服务端不做日期格式校验；系统时间（`submitted_at` / `last_saved_at`）由服务端自己写，两者互不影响。
 
-**响应 201（节选）**：
+**响应 201（节选：纸质栏目与系统留痕并存）**：
 
 ```json
 {
@@ -1429,7 +1540,26 @@ X-Idempotency-Key: 7f3c1e0a-9b2d-4c11-8f0e-1a2b3c4d5e6f
       "id": "f_01J2M4X8QK...",
       "form_no": "260206-001",
       "operation_code": "一次加硬",
+
+      "paper_unit_id": "un_01H...",
+      "paper_unit_text": "片",
+      "paper_submitter": "王五",
+      "paper_submitted_at": "2026.9.8",
+      "paper_inspector": "李四",
+      "paper_inspected_at": "2026.9.9",
+      "paper_machine_operator": "赵六",
+      "paper_handover_by": "钱七",
+
+      "unit_id": "un_01H...",
+      "unit_text": "片",
+
+      "created_by": "u_01H...",
+      "submitted_by": "u_01H...",
+      "submitted_at": "2026-02-06T08:20:00Z",
+      "last_saved_by": "u_01H...",
+      "last_saved_at": "2026-02-06T08:20:00Z",
       "save_count": 1,
+
       "total_qty": 100, "qualified_qty": 95, "defect_qty": 5, "pass_rate": 95,
       "is_complete": true, "missing_fields": [],
       "state": "ACTIVE",
@@ -1445,7 +1575,10 @@ X-Idempotency-Key: 7f3c1e0a-9b2d-4c11-8f0e-1a2b3c4d5e6f
 }
 ```
 
-> 本例中 `1+2+1+1 = 5` 恰好等于 `defect_qty`，且每列合计都不超过不合格品数，因此 V-1/V-2/V-3/V-4 全部不命中，`issues` 为 `[]`。
+> ⚠️ 响应里 `paper_submitter`（纸面「王五」）与 `submitted_by`（系统用户 `u_01H...`）是**两回事**：前者是纸面上手写的送检人，后者是真正点"保存"的登录账号。`paper_inspector` / `paper_machine_operator` / `paper_handover_by` 同理，**不要**用系统用户 id 去填它们，也**不要**拿它们当登录人展示（B-17）。
+> `unit_id` / `unit_text` 是 `paper_unit_id` / `paper_unit_text` 的只读别名（已废弃，值恒等），前端可忽略。
+> 因为 7 个纸质栏目里只有「单位」和「检验人」参与缺项判定（§3.4），本例两项都给了 → `missing_fields` 为空。
+> 本例中缺陷 `1+2+1+1 = 5` 恰好等于 `defect_qty`，且每列合计都不超过不合格品数，因此 V-1/V-2/V-3/V-4 全部不命中，`issues` 为 `[]`。
 > 若把 `defects` 改成 `{ "prick": { "concave": 3, "both": 2 } }` 而 `defect_qty` 仍是 5，则「点伤」合计 5 = 不合格品数 5，仍不触发 V-3（V-3 只在**超过**时命中）；改成 6 就会得到一条 `level: "warning"` 的 V-3 issue。
 > 服务端会把 `total_qty` / `qualified_qty` / `defect_qty` 按明细行重算，但本例显式给了一致的值，结果相同。
 
@@ -1476,7 +1609,7 @@ POST /api/forms
 
 - 因为 `form_no` 已存在 → `action = "save_form"`，`save_count` 变为 **2**。
 - 请求里**没有** `lines` → 原有明细**保持不变**（此处为新建后的空明细）。
-- 结果：`pass_rate` = 95（自动算），`missing_fields` 含 `unit_id`、`sample_raw`、`lines` → `is_complete = false`。
+- 结果：`pass_rate` = 95（自动算），`missing_fields` 含 `paper_unit_id`、`paper_inspector`、`sample_raw`、`lines` → `is_complete = false`。
 
 **第二次：补缺陷明细（用 `lines` 整笔替换 —— 这是唯一能写缺陷计数的途径）**
 
@@ -1539,6 +1672,43 @@ GET /api/forms/f_01J2M4X8QK.../history
 GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 ```
 
+### 场景三：单位字段的兼容写法与只读回显（`unit_*` → `paper_unit_*`）
+
+接场景一。老版本前端只会传 `unit_text`，新前端用 `paper_unit_text` —— 两者都能提交，落库都是 `paper_unit_text`。
+
+**第一次（旧写法）：只传 `unit_text`**
+
+```http
+PATCH /api/forms/f_01J2M4X8QK...
+```
+
+```json
+{ "form": { "unit_text": "二厂" } }
+```
+
+- 归一结果：`paper_unit_text = "二厂"`（`paper_unit_id` 未提及 → 保持不变）。
+- 响应里 `unit_text` 作为**只读别名**回显同样的值 `"二厂"`；`paper_inspector` 等其它纸质栏目**不受影响**。
+
+**第二次（两种写法同时给）：以 `paper_*` 为准**
+
+```json
+{ "form": { "paper_unit_text": "一厂", "unit_text": "三厂" } }
+```
+
+- 结果：`paper_unit_text = "一厂"`（`paper_unit_text` 出现了 → 同名的 `unit_text` 被忽略），响应里 `unit_text` 也回显 `"一厂"`。
+- `paper_unit_id` 与 `unit_id` **按列独立判定**：只写 `unit_id` 而写了 `paper_unit_text` 时，`unit_id` 仍会归一写入 `paper_unit_id`。
+
+**第三次：显式清空单位**
+
+```json
+{ "form": { "paper_unit_id": null, "paper_unit_text": null } }
+```
+
+- 结果：两个字段都清空 → 下一次保存后 `missing_fields` 会包含 `paper_unit_id`（因为单位整体为空）。
+- 单独传 `{ "unit_id": null }`（未传 `paper_unit_id`）效果相同：清空 `paper_unit_id`。
+
+> ⚠️ `forms` 表里**没有** `unit_id` / `unit_text` 列（迁移 `0004_paper_fields` 已删除），所以任何"只写别名"的请求最终都落在 `paper_unit_*` 上；读到别名只是接口层的回显，**不要**把它当作独立字段做增量对比或筛选（列表筛选用 `unit` 参数，见 §5.4）。
+
 ---
 
 ## 6. 数据模型速查
@@ -1557,13 +1727,8 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 | `sample_spec` | string\|null | 可写 | 拆解：规格（如 `S1`/`S2`） |
 | `sample_size` | string\|null | 可写 | 拆解：大小（如 `MD`/`SM`/`LG`） |
 | `sample_side` | string\|null | 可写 | 拆解：左右（如 `L`/`R`） |
-| `unit_id` | string\|null | 可写 | 单位字典 ID |
-| `unit_text` | string\|null | 可写 | 单位原文（与 `unit_id` 二者取一即可） |
-| `submitted_by` | string\|null | **服务端维护** | 首次录入的系统用户 ID（**与纸面人名无关**）；仅在为空时写入 |
-| `submitted_at` | string\|null | **服务端维护** | 首次提交时间；仅在为空时写入 |
-| `last_saved_by` | string\|null | **服务端维护** | 最后一次保存的系统用户 ID；每次覆盖 |
-| `last_saved_at` | string\|null | **服务端维护** | 最后一次保存时间；每次覆盖 |
-| `save_count` | int | **只读（服务端维护）** | 保存次数；新建为 1，每次合并更新 +1；可作乐观锁 |
+| → 纸质表头栏目 | — | — | 单独见下方**第一块**（8 个 `paper_*`，纸面手写值） |
+| → 系统留痕 | — | — | 单独见下方**第二块**（6 个字段，系统登录用户 id） |
 | `total_qty` | int | 可写（默认按明细重算） | 检验总数（表头合计值） |
 | `qualified_qty` | int | 可写（默认按明细重算） | 合格品 |
 | `defect_qty` | int | 可写（默认按明细重算） | 不合格品 |
@@ -1577,6 +1742,39 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 | `created_at` | string | **只读（服务端生成）** | 创建时间 |
 | `updated_at` | string | **只读（服务端维护）** | 最后更新时间 |
 | `lines` | Line[] | 见 §3.5 | 明细行；**只在详情接口里有内容**，列表接口恒为 `[]` |
+
+#### 第一块：纸质表单表头栏目（`paper_*`，纸面上手写的值）
+
+> ⚠️ 这些是**纸面手写内容**，不是系统用户；与下面第二块的系统留痕**并存且不可混用**（需求 B-11）。
+
+| 字段 | 类型 | 可写性 | 中文名 / 说明 |
+|---|---|---|---|
+| `paper_unit_id` | string\|null | 可写 | 单位编码（单位字典 id） |
+| `paper_unit_text` | string\|null | 可写 | 单位（原文；与 `paper_unit_id` 二者取一即可） |
+| `paper_submitter` | string\|null | 可写 | 送检人 —— **纸面手写人名**，非系统用户 |
+| `paper_submitted_at` | string\|null | 可写 | 送检时间 —— **按录入原文存字符串**（如 `2026.9.8`），服务端**不做日期格式假设/校验** |
+| `paper_inspector` | string\|null | 可写 | 检验人 —— **纸面手写人名**，非系统用户 |
+| `paper_inspected_at` | string\|null | 可写 | 检验时间 —— 同上，字符串原文 |
+| `paper_machine_operator` | string\|null | 可写 | 操机员 —— 纸面手写人名 |
+| `paper_handover_by` | string\|null | 可写 | 交接员 —— 纸面手写人名 |
+
+- 共 **7 个栏目 / 8 个字段名**（「单位」有 id / text 两列），完整说明见 §2.2。
+- `unit_id` / `unit_text`：`paper_unit_id` / `paper_unit_text` 的**只读别名**（`omitempty`）。读响应时回显 `paper_*` 的值；写入时会被归一到 `paper_*`，且**同时给出时以 `paper_*` 为准**（见 §3.5）。**数据库 `forms` 表里已无这两列**（迁移 `0004_paper_fields` 删除）。
+
+#### 第二块：系统留痕（系统登录用户 id，与纸面人名**无关**）
+
+> ⚠️ 这些字段由服务端写入，取的是**当前登录用户 id**，用于追溯"谁录入 / 谁最后改"；**不要**用它们充当纸面上的送检人 / 检验人，也不要拿 `paper_*` 当登录人（需求 B-17）。
+
+| 字段 | 类型 | 只读/服务端维护 | 说明 |
+|---|---|---|---|
+| `created_by` | string\|null | **服务端维护** | 首次创建该表单的系统用户 id；**仅在为空时写入** |
+| `submitted_by` | string\|null | **服务端维护** | 首次提交（首次录入）的系统用户 id；**仅在为空时写入** |
+| `submitted_at` | string\|null | **服务端维护** | 首次提交时间（系统时间）；仅在为空时写入 |
+| `last_saved_by` | string\|null | **服务端维护** | 最后一次保存的系统用户 id；每次覆盖 |
+| `last_saved_at` | string\|null | **服务端维护** | 最后一次保存时间；每次覆盖 |
+| `save_count` | int | **只读（服务端维护）** | 保存次数；新建为 1，每次合并更新 +1；可作乐观锁 |
+
+> 对比一眼看懂：纸面写「送检人：王五」→ `paper_submitter = "王五"`；真正点保存的是登录账号 `u_01H...` → `submitted_by = "u_01H..."`。两者**可以完全不同，也不会互相覆盖**。
 
 ### 6.2 `Line`（明细行）
 
@@ -1604,7 +1802,7 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 }
 ```
 
-- 第一层键：缺陷编码（35 个之一，见 §2.2）。
+- 第一层键：缺陷编码（35 个之一，见 §2.3）。
 - 第二层键：表面维度，只能是 `concave` / `convex` / `both`。
 - 值：整数计数。
 - `defects` 里只出现的格子会被写入/修改（三态语义见 §3.5）；**空对象 `{}` 表示清空全部**。
@@ -1617,9 +1815,9 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 
 ### 6.4 数据库列名对照（`forms` / `form_lines`）
 
-`forms` 表列（`migrations/sqlite/0003_form_submission.sqlite.up.sql`）与 JSON 字段**一一同名**，类型：
+`forms` 表列（`migrations/sqlite/0003_form_submission.sqlite.up.sql` + `0004_paper_fields.sqlite.up.sql`）与 JSON 字段**一一同名**（**除单位别名外**），类型：
 
-| 列 | SQL 类型 | 约束 |
+| 列 | SQL 类型 | 约束 / 说明 |
 |---|---|---|
 | `id` | TEXT | PK |
 | `form_no` | TEXT | NOT NULL，**唯一索引** `ux_forms_form_no` |
@@ -1627,8 +1825,12 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 | `operation_text` | TEXT | NULL |
 | `sample_raw` | TEXT | NOT NULL DEFAULT `''` |
 | `sample_project` / `sample_model` / `sample_spec` / `sample_size` / `sample_side` | TEXT | NULL |
-| `unit_id` / `unit_text` | TEXT | NULL |
-| `submitted_by` / `submitted_at` / `last_saved_by` / `last_saved_at` | TEXT | NULL |
+| `paper_unit_id` / `paper_unit_text` | TEXT | NULL（0004 新增；**纸质表头栏目「单位」**） |
+| `paper_submitter` / `paper_submitted_at` | TEXT | NULL（0004 新增；送检人 / 送检时间，**字符串原文**） |
+| `paper_inspector` / `paper_inspected_at` | TEXT | NULL（0004 新增；检验人 / 检验时间） |
+| `paper_machine_operator` / `paper_handover_by` | TEXT | NULL（0004 新增；操机员 / 交接员） |
+| `created_by` | TEXT | NULL（0004 新增；系统留痕：首次创建的系统用户 id） |
+| `submitted_by` / `submitted_at` / `last_saved_by` / `last_saved_at` | TEXT | NULL（系统留痕） |
 | `save_count` | INTEGER | NOT NULL DEFAULT 1 |
 | `total_qty` / `qualified_qty` / `defect_qty` | INTEGER | NOT NULL DEFAULT 0 |
 | `pass_rate` | REAL | NULL |
@@ -1638,7 +1840,9 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 | `voided_at` / `void_reason` / `remark` | TEXT | NULL |
 | `created_at` / `updated_at` | TEXT | NOT NULL DEFAULT `datetime('now')` |
 
-关键索引：`ix_forms_state_created(state, created_at)`、`ix_forms_operation(operation_code, submitted_at)`、`ix_forms_sample_dim(sample_spec, sample_size, sample_side, sample_model)`、`ix_forms_project(sample_project)`、`ix_forms_complete(state, is_complete)`、`ix_forms_unit(unit_id)`、`ix_forms_submitted_by(submitted_by)`。
+> ⚠️ **`unit_id` / `unit_text` 已经不是数据库列**：0003 里曾有，0004 迁移已 `DROP INDEX ix_forms_unit` + `ALTER TABLE forms DROP COLUMN unit_id/unit_text`。它们只作为**接口层的只读别名**存在（见 §3.5 / §6.1）。
+
+关键索引：`ux_forms_form_no(form_no)`、`ix_forms_state_created(state, created_at)`、`ix_forms_operation(operation_code, submitted_at)`、`ix_forms_sample_dim(sample_spec, sample_size, sample_side, sample_model)`、`ix_forms_project(sample_project)`、`ix_forms_complete(state, is_complete)`、`ix_forms_submitted_by(submitted_by)`、**`ix_forms_paper_inspector(paper_inspector)`**、**`ix_forms_paper_submitter(paper_submitter)`**、**`ix_forms_paper_unit(paper_unit_id)`**（后三个由 0004 新增；旧索引 `ix_forms_unit` 已被删除）。
 
 `form_lines` 表列 = `id, form_id, seq, total_qty, qualified_qty, defect_qty` + **105 个缺陷子列** + `remark, created_at, updated_at`；所有缺陷子列均为 `INTEGER NOT NULL DEFAULT 0`。唯一索引 `ux_form_lines_form_seq(form_id, seq)`。
 
@@ -1660,48 +1864,60 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `from` | string | — | `COALESCE(submitted_at, created_at) >= from`（**注意与 `GET /api/forms` 的 `from` 口径不同**：这里优先用 `submitted_at`） |
-| `to` | string | — | `COALESCE(submitted_at, created_at) <= to + "T23:59:59Z"` |
+| `from` | string | — | `COALESCE(paper_submitted_at, submitted_at, created_at) >= from`（**注意与 `GET /api/forms` 的 `from` 口径不同**：这里优先用纸面送检时间 `paper_submitted_at`，再退到 `submitted_at`） |
+| `to` | string | — | 同上表达式 `<= to + "T23:59:59Z"` |
 | `operation_code` | string | — | 精确匹配 |
 | `sample_project` | string | — | 精确匹配 |
 | `sample_model` | string | — | 精确匹配 |
 | `sample_spec` | string | — | 精确匹配 |
 | `sample_size` | string | — | 精确匹配 |
 | `sample_side` | string | — | 精确匹配 |
-| `submitted_by` | string | — | 精确匹配录入人 ID |
-| `unit` | string | — | 精确匹配 `COALESCE(unit_text, unit_id)` |
+| `paper_inspector` | string | — | 精确匹配纸面「检验人」（**手写人名**，不是系统用户 id） |
+| `paper_submitter` | string | — | 精确匹配纸面「送检人」 |
+| `submitted_by` | string | — | 精确匹配系统录入人 ID（`submitted_by` 列） |
+| `unit` | string | — | 精确匹配 `COALESCE(paper_unit_text, paper_unit_id)`（优先比 `paper_unit_text`） |
 | `include_void` | string | — | 仅当**恰好等于 `"true"`** 时包含已作废表单；**默认只统计 `state = 'ACTIVE'`** |
 
-### 7.2 `group_by` 维度白名单（14 个，从代码取全）
+> 注意：**没有** `paper_submitted_at` / `paper_inspected_at` 这类"按纸面时间筛选"的参数，纸面时间只作为 `from` / `to` 与 `day` / `month` 分组的取值来源。
+
+### 7.2 `group_by` 维度白名单（19 个，从代码取全）
 
 `GET /api/stats/dimensions` 返回的完整清单（按字母序）：
 
 | 维度 | 含义 | 底层表达式 |
 |---|---|---|
-| `day` | 日期（`YYYY-MM-DD`） | `substr(COALESCE(submitted_at, created_at), 1, 10)` |
-| `form_no` | 表单号 | `form_no` |
-| `last_saved_by` | 最后保存人 ID | `last_saved_by` |
-| `month` | 月份（`YYYY-MM`） | `substr(COALESCE(submitted_at, created_at), 1, 7)` |
-| `operation_code` | 检验工序编码 | `operation_code` |
-| `operation_text` | 检验工序原文 | `operation_text` |
-| `sample_model` | 型号 | `sample_model` |
-| `sample_project` | 项目 | `sample_project` |
-| `sample_raw` | 样品原始串 | `sample_raw` |
-| `sample_side` | 左右 | `sample_side` |
-| `sample_size` | 大小 | `sample_size` |
-| `sample_spec` | 规格 | `sample_spec` |
-| `submitted_by` | 录入人 ID | `submitted_by` |
-| `unit` | 单位 | `COALESCE(unit_text, unit_id)` |
+| `created_by` | 创建人（系统用户 id） | `f.created_by` |
+| `day` | 日期（`YYYY-MM-DD`） | `substr(COALESCE(f.paper_submitted_at, f.submitted_at, f.created_at), 1, 10)` |
+| `form_no` | 表单号 | `f.form_no` |
+| `last_saved_by` | 最后保存人（系统用户 id） | `f.last_saved_by` |
+| `month` | 月份（`YYYY-MM`） | `substr(COALESCE(f.paper_submitted_at, f.submitted_at, f.created_at), 1, 7)` |
+| `operation_code` | 检验工序编码 | `f.operation_code` |
+| `operation_text` | 检验工序原文 | `f.operation_text` |
+| `paper_handover` | 纸面「交接员」 | `f.paper_handover_by` |
+| `paper_inspector` | 纸面「检验人」（手写人名） | `f.paper_inspector` |
+| `paper_operator` | 纸面「操机员」 | `f.paper_machine_operator` |
+| `paper_submitter` | 纸面「送检人」 | `f.paper_submitter` |
+| `sample_model` | 型号 | `f.sample_model` |
+| `sample_project` | 项目 | `f.sample_project` |
+| `sample_raw` | 样品原始串 | `f.sample_raw` |
+| `sample_side` | 左右 | `f.sample_side` |
+| `sample_size` | 大小 | `f.sample_size` |
+| `sample_spec` | 规格 | `f.sample_spec` |
+| `submitted_by` | 录入人（系统用户 id） | `f.submitted_by` |
+| `unit` | 单位 | `COALESCE(f.paper_unit_text, f.paper_unit_id)` |
 
+> 共 **19** 个维度 = 原有 **14** 个（`day`、`form_no`、`last_saved_by`、`month`、`operation_code`、`operation_text`、`sample_model`、`sample_project`、`sample_raw`、`sample_side`、`sample_size`、`sample_spec`、`submitted_by`、`unit`）+ 本次新增 **5** 个（`paper_inspector`、`paper_submitter`、`paper_operator`、`paper_handover`、`created_by`）。
+> ⚠️ 注意维度名与列名的**故意不一致**：`paper_operator` → 列 `paper_machine_operator`（操机员）、`paper_handover` → 列 `paper_handover_by`（交接员）——**不存在** `paper_machine_operator` / `paper_handover_by` 这两个维度名，写错会 400。
 > ⚠️ **`sample_class`（结构类别）不在白名单里**，用它分组会返回 400。
-> 传入白名单外的维度 → **400** `bad_request`，message `"不支持的分组维度: xxx"`，`details = {"supported": [...14 个...]}`。
+> ⚠️ `submitted_by` / `last_saved_by` / `created_by` 是**系统用户 id**（留痕）；`paper_inspector` / `paper_submitter` / `paper_operator` / `paper_handover` 是**纸面手写人名**，两组含义不同、不可互相替代（B-17）。
+> 传入白名单外的维度 → **400** `bad_request`，message `"不支持的分组维度: xxx"`，`details = {"supported": [...19 个...]}`。
 
 **写法**：`?group_by=sample_project,sample_size`（逗号分隔）或 `?group_by=sample_project&group_by=sample_size`（重复参数）——两种都支持，可混用；空白项被忽略。**不传 `group_by` 时只返回总计 `total`**，`groups` 为空数组。
 
 `GET /api/stats/dimensions` 响应：
 
 ```json
-{ "code": "ok", "message": "", "data": { "dimensions": ["day", "form_no", "last_saved_by", "month", "operation_code", "operation_text", "sample_model", "sample_project", "sample_raw", "sample_side", "sample_size", "sample_spec", "submitted_by", "unit"] } }
+{ "code": "ok", "message": "", "data": { "dimensions": ["created_by", "day", "form_no", "last_saved_by", "month", "operation_code", "operation_text", "paper_handover", "paper_inspector", "paper_operator", "paper_submitter", "sample_model", "sample_project", "sample_raw", "sample_side", "sample_size", "sample_spec", "submitted_by", "unit"] } }
 ```
 
 ### 7.3 `GET /api/stats/summary`
@@ -1726,7 +1942,7 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `group_by` | string[] | 回显实际使用的维度顺序 |
-| `groups[].key` | string | 各维度值用 **`" | "`（空格-竖线-空格）**连接；单维度就是该值本身 |
+| `groups[].key` | string | 各维度值用 **`" \| "`（空格-竖线-空格）**连接；单维度就是该值本身 |
 | `groups[].form_count` | int | 该组的表单数（`COUNT(*)`） |
 | `groups[].total_qty` | int | 该组 `SUM(total_qty)`（`COALESCE`，无数据为 0） |
 | `groups[].qualified_qty` | int | 该组 `SUM(qualified_qty)` |
@@ -1769,7 +1985,7 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 
 | 查询参数 | 默认 | 说明 |
 |---|---|---|
-| `by` | `submitted_by` | 只接受 **`submitted_by`** 或 **`last_saved_by`**；其它值 → **400** `"不支持的人员维度: xxx（可选 submitted_by | last_saved_by）"` |
+| `by` | `submitted_by` | 只接受 **`submitted_by`** 或 **`last_saved_by`**；其它值 → **400** `"不支持的人员维度: xxx（可选 submitted_by \| last_saved_by）"` |
 | 其余 | — | 同 §7.1 通用筛选 |
 
 ```json
@@ -1798,7 +2014,7 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
   "code": "ok", "message": "",
   "data": {
     "items": [
-      { "id": "f_01H...", "form_no": "260206-004", "operation_code": "一次加硬", "missing_fields": "[\"unit_id\",\"sample_raw\"]", "last_saved_at": "2026-02-06T09:30:00Z", "created_at": "2026-02-06T09:30:00Z" }
+      { "id": "f_01H...", "form_no": "260206-004", "operation_code": "一次加硬", "missing_fields": "[\"paper_unit_id\",\"paper_inspector\",\"sample_raw\"]", "last_saved_at": "2026-02-06T09:30:00Z", "created_at": "2026-02-06T09:30:00Z" }
     ],
     "total": 1,
     "note": "这些笔尚未填完整（缺失表单既有栏目或计数明细），可供跟进"
@@ -1813,9 +2029,10 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 1. **明细缺陷子项合计可能大于不合格品数**：同一片镜片可同时计入多个缺陷类别，因此 `Σ(35 列 × 3 表面)` ≥ `defect_qty` 是正常情况（见 V-2 恒为警告）。前端做比率类展示时请勿假设两者相等。
 2. **`pass_rate` 的口径差异**：表单详情/保存响应里的 `pass_rate` 由 `ComputePassRate` 计算，`total_qty <= 0` 时为 **`null`**；统计接口（`summary` / `workload`）的 `pass_rate` 在 `total_qty <= 0` 时为 **`0`**。
 3. **统计默认排除已作废表单**：需要包含请加 `include_void=true`。
-4. **`from` / `to` 的时间字段口径**：`GET /api/forms` 用 `created_at`，统计接口用 `COALESCE(submitted_at, created_at)`。
+4. **`from` / `to` 的时间字段口径**：`GET /api/forms` 用 **`created_at`**（入库时间），统计接口用 **`COALESCE(paper_submitted_at, submitted_at, created_at)`**（优先纸面「送检时间」，它是**任意格式的字符串**，只做字符串比较，不做日期解析）。两者结果可能不同。
 5. **统计表头指标取自 `forms` 表**（不是明细求和）；只有 `defects` 分布取自 `form_lines`。
 6. **`groups` / `items` 有截断**：`summary` 最多 500 组、`workload` 最多 200 行、`incomplete-forms` 最多 500 行，前端应提示"结果已截断"。
+7. **纸面人名与系统用户是两套**：`paper_inspector` / `paper_submitter` / `paper_operator`（列 `paper_machine_operator`）/ `paper_handover`（列 `paper_handover_by`）按**手写人名**分组或筛选；`submitted_by` / `last_saved_by` / `created_by` 按**系统用户 id** 分组。**不要**把 `paper_inspector` 当"谁录入的"（见 §8.4）。
 
 ---
 
@@ -1837,7 +2054,16 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 | `sample_spec` | 规格（S1 / S2） |
 | `sample_size` | 大小（MD / SM / LG） |
 | `sample_side` | 左右（L / R） |
-| `unit_id` / `unit_text` | 单位 |
+| `paper_unit_id` | 单位编码（单位字典 id；纸质表头栏目） |
+| `paper_unit_text` | 单位（原文；纸质表头栏目） |
+| `paper_submitter` | 送检人（**纸面手写人名**，非系统用户） |
+| `paper_submitted_at` | 送检时间（**原文字符串**，如 `2026.9.8`，不做日期格式假设） |
+| `paper_inspector` | 检验人（**纸面手写人名**，非系统用户） |
+| `paper_inspected_at` | 检验时间（原文字符串） |
+| `paper_machine_operator` | 操机员（纸面手写人名） |
+| `paper_handover_by` | 交接员（纸面手写人名） |
+| `unit_id` / `unit_text` | ⚠️ **已废弃的兼容别名**（只读回显 `paper_unit_id` / `paper_unit_text`，数据库里已无此列） |
+| `created_by` | 创建人（**系统登录用户 id**，首次创建时写入） |
 | `save_count` | 保存次数 |
 | `is_complete` | 是否填完整 |
 | `missing_fields` | 缺失栏目 |
@@ -1845,12 +2071,13 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 | `voided_at` | 作废时间 |
 | `void_reason` | 作废原因 |
 | `remark` | 备注 |
-| `submitted_by` / `submitted_at` | 首次录入人 / 首次提交时间 |
-| `last_saved_by` / `last_saved_at` | 最后保存人 / 最后保存时间 |
+| `submitted_by` / `submitted_at` | 首次录入人（**系统用户 id**）/ 首次提交时间 |
+| `last_saved_by` / `last_saved_at` | 最后保存人（**系统用户 id**）/ 最后保存时间 |
 | `seq` | 明细行序号 |
 | `defects` | 不良缺陷明细 |
 
-35 个不良缺陷列的中文名见 §2.2 的完整表格；105 个子列的中文名规则为 `<列名>-<凹面|凸面|双面>`（如 `点伤-凹面`）。
+35 个不良缺陷列的中文名见 §2.3 的完整表格；105 个子列的中文名规则为 `<列名>-<凹面|凸面|双面>`（如 `点伤-凹面`）。
+`paper_*` 8 个字段的中文名与"7 栏目 / 8 字段"的口径见 §2.2。
 
 ### 8.2 工序表单模板列表与"未登记工序"的回退
 
@@ -1862,7 +2089,7 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 | 2 | `一次加硬` | 一次加硬 | 10 | （无） |
 | 3 | `二次加硬` | 二次加硬 | 20 | （无） |
 
-- 所有模板的 `allowed_fields` 均为空 → **不限制可填列**（全部 110 个字段都可提交，且**没有任何必填**）。
+- 所有模板的 `allowed_fields` 均为空 → **不限制可填列**（全部 **117** 个字段都可提交：7 纸质表头栏目 + 5 计数区栏目 + 105 缺陷子列，且**没有任何必填**）。
 - `allowed_fields` 支持将来按工序收窄（"非空时只允许提交其中的字段"）——但**当前服务层尚未按 `allowed_fields` 过滤提交**，该字段目前只是模板元数据。
 - **未登记工序的回退**（`operations.Find`）：传入任何未登记的编码（如 `三次加硬`）**不报错**，返回：
 
@@ -1920,6 +2147,11 @@ GET /api/forms/f_01J2M4X8QK.../history/diff?from=<上面 items[0].id>&to=current
 | `pass_rate` 要不要传 | 一般别传；传了就会覆盖服务端计算值 |
 | `form.operation_code` vs 顶层 `operation_code` | 顶层只在**新建**时生效；更新既有表单必须写进 `form` |
 | 未知字段会被拒绝 | 400 而不是忽略；`details.unknown_fields` 会列出拼错的键 |
+| **纸面人名 vs 系统用户（最容易搞混）** | `paper_submitter`（送检人）/ `paper_inspector`（检验人）/ `paper_machine_operator`（操机员）/ `paper_handover_by`（交接员）是**纸面上手写的名字**（可以是任何文字，甚至同名临时工）；`created_by` / `submitted_by` / `last_saved_by` 是**系统登录用户 id**。两者并存、互不覆盖，**不要**互相填充，也**不要**用 `paper_inspector` 当"谁录入的"（B-17，见 §2.2 / §6.1） |
+| **纸面时间是字符串** | `paper_submitted_at` / `paper_inspected_at` 按原文存（如 `2026.9.8`），服务端**不校验格式**；只有统计的 `from` / `to` / `day` / `month` 会做**字符串前缀比较**（`substr`），格式不统一会导致分组零散 |
+| **`unit_id` / `unit_text` 已废弃** | 数据库 `forms` 表已无这两列（迁移 0004 删除）；它们只是 `paper_unit_id` / `paper_unit_text` 的**只读别名**，写进去会被归一。新代码一律用 `paper_unit_*`；同时给出时**以 `paper_*` 为准**（见 §3.5） |
+| **`paper_columns` 不在 layout 里** | `GET /api/form-fields` 的顶层 `paper_columns`（7 项）才是纸质表头栏目的目录；`layout`（form-templates / forms/{id}）里**没有**这一块 |
+| 缺项判定只有 5 项 | `missing_fields` 只可能报 `operation_code` / `paper_unit_id` / `paper_inspector` / `sample_raw` / `lines`；`paper_submitter` 等为空**不会**进缺项（见 §3.4） |
 | 缺陷字段的两种写法 | 嵌套 `defects.prick.concave` 与扁平 `prick_concave` 都支持 |
 | 顶层 `defects` 不写明细 | 缺陷计数只存在于**明细行**；要写缺陷请提交 `lines` |
 | 历史快照是字符串 | `submission_snapshot` / `lines_snapshot` 需要 `JSON.parse` |

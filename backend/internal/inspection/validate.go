@@ -158,18 +158,24 @@ func ValidateSubmission(s Submission, now time.Time) []httpx.Issue {
 	}
 	return issues
 }
-
 // MissingFields 返回缺失的表单栏目（不阻断保存，仅作完成度提示）。
 //
+// 口径（需求 §6.4）：
+//   - 纸面栏目：单位、检验人（纸质表单既有栏目，B-11）
+//   - 计数区：检验工序、是否有明细行
+//
 // 说明：需求允许"还没填完"（F-3），因此这里只是提示；
-// 检验工序、样品信息、明细行是"这张表填过了吗"的最低判断依据。
+// 另外**不把"送检人/检验人"等与系统用户混为一谈**——纸面人名可以为空，不影响保存。
 func MissingFields(s Submission) []string {
-	missing := make([]string, 0, 4)
+	missing := make([]string, 0, 6)
 	if strings.TrimSpace(s.OperationCode) == "" {
 		missing = append(missing, "operation_code")
 	}
-	if str(s.UnitID) == "" && str(s.UnitText) == "" {
-		missing = append(missing, "unit_id")
+	if str(s.PaperUnitID) == "" && str(s.PaperUnitText) == "" && str(s.UnitID) == "" && str(s.UnitText) == "" {
+		missing = append(missing, "paper_unit_id")
+	}
+	if str(s.PaperInspector) == "" {
+		missing = append(missing, "paper_inspector")
 	}
 	if strings.TrimSpace(s.SampleRaw) == "" {
 		missing = append(missing, "sample_raw")

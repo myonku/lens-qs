@@ -38,7 +38,13 @@ func TestSaveCreatesSubmissionWithAllFields(t *testing.T) {
 		"sample_raw": "M2 S2 ND2 SMR",
 		"sample_project": "M2",
 		"sample_spec": "S2",
-		"unit_text": "一厂",
+		"paper_unit_text": "一厂",
+		"paper_submitter": "王五",
+		"paper_submitted_at": "2026.9.8",
+		"paper_inspector": "张赛赛",
+		"paper_inspected_at": "2026.9.9",
+		"paper_machine_operator": "赵六",
+		"paper_handover_by": "钱七",
 		"lines": [
 			{ "total_qty": 100, "qualified_qty": 97, "defect_qty": 3,
 			  "defects": {
@@ -108,7 +114,9 @@ func TestSaveMergesPartialUpdateAndKeepsHistory(t *testing.T) {
 	first := mustPatch(t, `{
 		"operation_code": "一次加硬",
 		"sample_raw": "M2 S2 ND2 SMR",
-		"unit_text": "一厂",
+		"paper_unit_text": "一厂",
+		"paper_inspector": "张赛赛",
+		"paper_inspected_at": "2026.9.9",
 		"lines": [ { "total_qty": 100, "qualified_qty": 100, "defect_qty": 0 } ]
 	}`)
 	res1, err := svc.Save(ctx, actor, SaveInput{FormNo: "F-002", Patch: first, LinesGiven: true})
@@ -132,8 +140,22 @@ func TestSaveMergesPartialUpdateAndKeepsHistory(t *testing.T) {
 	if s.SampleRaw != "M2 S2 ND2 SMR" {
 		t.Error("未提交的样品原始串被改动了（原始串是事实来源）")
 	}
-	if s.UnitText == nil || *s.UnitText != "一厂" {
+	if s.PaperUnitText == nil || *s.PaperUnitText != "一厂" {
 		t.Error("未提交的单位被清空了")
+	}
+	// 纸质栏目（检验人）未提交 → 必须保持原值，且不能被系统用户字段顶替
+	if s.PaperInspector == nil || *s.PaperInspector != "张赛赛" {
+		t.Errorf("未提交的检验人被清空了: %v", s.PaperInspector)
+	}
+	if s.PaperInspectedAt == nil || *s.PaperInspectedAt != "2026.9.9" {
+		t.Errorf("未提交的检验时间被清空了: %v", s.PaperInspectedAt)
+	}
+	// 系统录入人与纸面检验人是两个不同的字段
+	if s.SubmittedBy == nil || *s.SubmittedBy != "u-1" {
+		t.Errorf("系统录入人应为 u-1: %v", s.SubmittedBy)
+	}
+	if s.CreatedBy == nil || *s.CreatedBy != "u-1" {
+		t.Errorf("创建人应为 u-1: %v", s.CreatedBy)
 	}
 	if s.TotalQty != 120 {
 		t.Errorf("总数应更新为 120，得到 %d", s.TotalQty)
@@ -386,6 +408,98 @@ func TestSaveBatchSuccess(t *testing.T) {
 	}
 	if _, err := svc.SaveBatch(ctx, actor, nil); err == nil {
 		t.Error("空批量应报错")
+	}
+}
+
+// 纸质栏目与系统留痕必须**并存且不混用**（需求 B-11 / B-17）。
+func TestPaperFieldsDoNotMixWithSystemFields(t *testing.T) {
+	svc, ctx := newSvc(t)
+	// 系统用户叫 u-1；纸面上的检验人叫"李四"——两者必须各存各的
+	patch := mustPatch(t, `{
+		"operation_code": "一次加硬",
+		"paper_inspector": "李四",
+		"paper_submitter": "王五",
+		"paper_machine_operator": "赵六",
+		"paper_handover_by": "钱七",
+		"paper_submitted_at": "2026.9.8",
+		"paper_inspected_at": "2026.9.9",
+		"paper_unit_text": "二厂"
+	}`)
+	res, err := svc.Save(ctx, Actor{UserID: "u-1", DisplayName: "张赛赛"},
+		SaveInput{FormNo: "P-001", Patch: patch})
+	if err != nil {
+		t.Fatalf("保存失败: %v", err)
+	}
+	s := res.Submission
+
+	// 纸面人名按原文保存
+	for _, c := range []struct {
+		name string
+		got  *string
+		want string
+	}{
+		{"检验人", s.PaperInspector, "李四"},
+		{"送检人", s.PaperSubmitter, "王五"},
+		{"操机员", s.PaperMachineOperator, "赵六"},
+		{"交接员", s.PaperHandoverBy, "钱七"},
+		{"送检时间", s.PaperSubmittedAt, "2026.9.8"},
+		{"检验时间", s.PaperInspectedAt, "2026.9.9"},
+		{"单位", s.PaperUnitText, "二厂"},
+	} {
+		if c.got == nil || *c.got != c.want {
+			t.Errorf("纸面%s应为 %q，得到 %v", c.name, c.want, c.got)
+		}
+	}
+	// 系统留痕是独立的系统用户，不是纸面人名
+	if s.SubmittedBy == nil || *s.SubmittedBy != "u-1" {
+		t.Errorf("系统录入人应为 u-1，得到 %v", s.SubmittedBy)
+	}
+	if s.CreatedBy == nil || *s.CreatedBy != "u-1" {
+		t.Errorf("创建人应为 u-1，得到 %v", s.CreatedBy)
+	}
+	// 单位别名与 paper_unit_* 一致（只读回显）
+	if s.UnitText == nil || *s.UnitText != "二厂" {
+		t.Errorf("单位别名应回显 paper_unit_text，得到 %v", s.UnitText)
+	}
+	// 旧写法 unit_text 应归一到 paper_unit_text
+	p2 := mustPatch(t, `{"unit_text": "三厂"}`)
+	res2, err := svc.Save(ctx, Actor{UserID: "u-1"},
+		SaveInput{SubmissionID: s.ID, Patch: p2})
+	if err != nil {
+		t.Fatalf("保存失败: %v", err)
+	}
+	if res2.Submission.PaperUnitText == nil || *res2.Submission.PaperUnitText != "三厂" {
+		t.Errorf("旧写法 unit_text 应写入 paper_unit_text，得到 %v", res2.Submission.PaperUnitText)
+	}
+	if res2.Submission.PaperInspector == nil || *res2.Submission.PaperInspector != "李四" {
+		t.Error("写单位不应影响检验人")
+	}
+}
+
+// 纸质栏目可按检验人/送检人筛选（原需求 Q-1 的检索能力）。
+func TestListFiltersByPaperPersonnel(t *testing.T) {
+	svc, ctx := newSvc(t)
+	a := Actor{UserID: "u-1"}
+	formNos := []string{"L-1", "L-2", "L-3"}
+	for i, who := range []string{"张赛赛", "李四", "张赛赛"} {
+		p := mustPatch(t, `{"operation_code":"一次加硬","paper_inspector":"`+who+`","paper_unit_text":"一厂"}`)
+		if _, err := svc.Save(ctx, a, SaveInput{FormNo: formNos[i], Patch: p}); err != nil {
+			t.Fatalf("保存失败: %v", err)
+		}
+	}
+	list, total, err := svc.Store().ListSubmissions(ctx, FormFilter{Inspector: "张赛赛"})
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if total != 2 || len(list) != 2 {
+		t.Fatalf("按检验人筛选应为 2 张，得到 total=%d len=%d", total, len(list))
+	}
+	_, total2, err := svc.Store().ListSubmissions(ctx, FormFilter{Unit: "一厂"})
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if total2 != 3 {
+		t.Fatalf("按单位筛选应为 3 张，得到 %d", total2)
 	}
 }
 

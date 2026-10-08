@@ -147,8 +147,20 @@ type FormPatch struct {
 	SampleSpec    NullableString `json:"sample_spec"`
 	SampleSize    NullableString `json:"sample_size"`
 	SampleSide    NullableString `json:"sample_side"`
-	UnitID        NullableString `json:"unit_id"`
-	UnitText      NullableString `json:"unit_text"`
+
+	// 纸质表单原有的表头栏目（B-11）
+	PaperUnitID          NullableString `json:"paper_unit_id"`
+	PaperUnitText        NullableString `json:"paper_unit_text"`
+	PaperSubmitter       NullableString `json:"paper_submitter"`
+	PaperSubmittedAt     NullableString `json:"paper_submitted_at"`
+	PaperInspector       NullableString `json:"paper_inspector"`
+	PaperInspectedAt     NullableString `json:"paper_inspected_at"`
+	PaperMachineOperator NullableString `json:"paper_machine_operator"`
+	PaperHandoverBy      NullableString `json:"paper_handover_by"`
+
+	// 单位别名（兼容早期写法；会归一到 paper_unit_*）
+	UnitID   NullableString `json:"unit_id"`
+	UnitText NullableString `json:"unit_text"`
 
 	Remark NullableString `json:"remark"`
 
@@ -177,7 +189,14 @@ var FormPatchKeys = []string{
 	"operation_code", "operation", "operation_text",
 	"total_qty", "qualified_qty", "defect_qty", "pass_rate",
 	"sample_raw", "sample_project", "sample_model", "sample_spec", "sample_size", "sample_side",
-	"unit_id", "unit_text", "remark", "defects", "lines",
+	// 纸质表单原有的表头栏目
+	"paper_unit_id", "paper_unit_text",
+	"paper_submitter", "paper_submitted_at",
+	"paper_inspector", "paper_inspected_at",
+	"paper_machine_operator", "paper_handover_by",
+	// 兼容旧写法的单位
+	"unit_id", "unit_text",
+	"remark", "defects", "lines",
 }
 
 // LinePatchKeys 是 LinePatch 认识的键。
@@ -289,8 +308,27 @@ func (p *FormPatch) ApplyTo(s *Submission) {
 	p.SampleSpec.ApplyPtr(&s.SampleSpec)
 	p.SampleSize.ApplyPtr(&s.SampleSize)
 	p.SampleSide.ApplyPtr(&s.SampleSide)
-	p.UnitID.ApplyPtr(&s.UnitID)
-	p.UnitText.ApplyPtr(&s.UnitText)
+
+	// 纸质表头栏目
+	p.PaperUnitID.ApplyPtr(&s.PaperUnitID)
+	p.PaperUnitText.ApplyPtr(&s.PaperUnitText)
+	p.PaperSubmitter.ApplyPtr(&s.PaperSubmitter)
+	p.PaperSubmittedAt.ApplyPtr(&s.PaperSubmittedAt)
+	p.PaperInspector.ApplyPtr(&s.PaperInspector)
+	p.PaperInspectedAt.ApplyPtr(&s.PaperInspectedAt)
+	p.PaperMachineOperator.ApplyPtr(&s.PaperMachineOperator)
+	p.PaperHandoverBy.ApplyPtr(&s.PaperHandoverBy)
+
+	// 单位别名：只有没写 paper_unit_* 时才生效，避免同一次请求里两个写法打架
+	if !p.PaperUnitID.IsSet {
+		p.UnitID.ApplyPtr(&s.PaperUnitID)
+	}
+	if !p.PaperUnitText.IsSet {
+		p.UnitText.ApplyPtr(&s.PaperUnitText)
+	}
+	// 别名回显（只读，方便前端只读一个字段）
+	s.UnitID, s.UnitText = s.PaperUnitID, s.PaperUnitText
+
 	p.Remark.ApplyPtr(&s.Remark)
 }
 

@@ -186,6 +186,9 @@ func (s *Service) saveTx(ctx context.Context, tx *sqlx.Tx, actor Actor, in SaveI
 		sub.SaveCount++
 	}
 	now := store.FormatTime(time.Now())
+	if sub.CreatedBy == nil {
+		sub.CreatedBy = &actor.UserID
+	}
 	if sub.SubmittedBy == nil {
 		sub.SubmittedBy = &actor.UserID
 	}

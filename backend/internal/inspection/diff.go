@@ -33,12 +33,23 @@ var submissionScalarFields = []struct {
 	{"sample_spec", func(s Submission) any { return deref(s.SampleSpec) }},
 	{"sample_size", func(s Submission) any { return deref(s.SampleSize) }},
 	{"sample_side", func(s Submission) any { return deref(s.SampleSide) }},
-	{"unit_id", func(s Submission) any { return deref(s.UnitID) }},
-	{"unit_text", func(s Submission) any { return deref(s.UnitText) }},
+
+	// 纸质表单原有的表头栏目（B-11）
+	{"paper_unit_id", func(s Submission) any { return deref(s.PaperUnitID) }},
+	{"paper_unit_text", func(s Submission) any { return deref(s.PaperUnitText) }},
+	{"paper_submitter", func(s Submission) any { return deref(s.PaperSubmitter) }},
+	{"paper_submitted_at", func(s Submission) any { return deref(s.PaperSubmittedAt) }},
+	{"paper_inspector", func(s Submission) any { return deref(s.PaperInspector) }},
+	{"paper_inspected_at", func(s Submission) any { return deref(s.PaperInspectedAt) }},
+	{"paper_machine_operator", func(s Submission) any { return deref(s.PaperMachineOperator) }},
+	{"paper_handover_by", func(s Submission) any { return deref(s.PaperHandoverBy) }},
+
 	{"remark", func(s Submission) any { return deref(s.Remark) }},
 	{"is_complete", func(s Submission) any { return s.IsComplete }},
 	{"missing_fields", func(s Submission) any { return s.MissingFields }},
 	{"save_count", func(s Submission) any { return s.SaveCount }},
+	{"submitted_by", func(s Submission) any { return deref(s.SubmittedBy) }},
+	{"submitted_at", func(s Submission) any { return deref(s.SubmittedAt) }},
 	{"last_saved_by", func(s Submission) any { return deref(s.LastSavedBy) }},
 	{"last_saved_at", func(s Submission) any { return deref(s.LastSavedAt) }},
 }
