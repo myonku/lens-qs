@@ -1,0 +1,48 @@
+{
+  "snapshot_date": "2026-11-03",
+  "description": "Original documentation before v2 documentation rebuild; source files preserved byte-for-byte.",
+  "files": [
+    {
+      "original_path": "README.md",
+      "archived_path": "archive/2026-11-03/legacy/README.md",
+      "sha256": "cf970c207e7f2fb4f2b000780fef811ff0042ecddcff9852eb5b6c2ba6d36398",
+      "bytes": 7233
+    },
+    {
+      "original_path": "backend/README.md",
+      "archived_path": "archive/2026-11-03/legacy/backend/README.md",
+      "sha256": "1deffa3210098400cb80724da331afd73f1f6fa271c14c571ff11a6a849a6e88",
+      "bytes": 28101
+    },
+    {
+      "original_path": "docs/requirements.md",
+      "archived_path": "archive/2026-11-03/legacy/docs/requirements.md",
+      "sha256": "7516f5b661feaf9392d0de3203fae2433f460187cf98d3a7f7e2355535ac2792",
+      "bytes": 63349
+    },
+    {
+      "original_path": "docs/design.md",
+      "archived_path": "archive/2026-11-03/legacy/docs/design.md",
+      "sha256": "aaf1d8e6c357b03cb431b960c560c3e3ecfde9780416b8ca2b93ef5c630aaabb",
+      "bytes": 68724
+    },
+    {
+      "original_path": "docs/features.md",
+      "archived_path": "archive/2026-11-03/legacy/docs/features.md",
+      "sha256": "d8d8d57901c13396979969dc8fd90768dcff32ed0b5f13c2f25b33e2101bbab0",
+      "bytes": 16983
+    },
+    {
+      "original_path": "docs/api.md",
+      "archived_path": "archive/2026-11-03/legacy/docs/api.md",
+      "sha256": "b63b049263efeafb95274e61733675b6fc675d91486d5bde2c99dd59f0638749",
+      "bytes": 122642
+    },
+    {
+      "original_path": "docs/rebuild-draft-2026-11-03.md",
+      "archived_path": "archive/2026-11-03/legacy/docs/rebuild-draft-2026-11-03.md",
+      "sha256": "39402536225668b732f49253be890c148b83cf594bdda0b45cd62542392db5ed",
+      "bytes": 28973
+    }
+  ]
+}
