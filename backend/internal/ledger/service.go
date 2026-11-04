@@ -22,10 +22,12 @@ type Service struct{ db *sqlx.DB }
 func New(db *sqlx.DB) *Service { return &Service{db: db} }
 
 type unit struct {
-	tx    *sqlx.Tx
-	ctx   context.Context
-	err   error
-	actor string
+	tx        *sqlx.Tx
+	ctx       context.Context
+	err       error
+	actor     string
+	actorType string
+	timestamp string
 }
 
 func (u *unit) exec(q string, args ...any) {
@@ -116,7 +118,7 @@ func (u *unit) audit(entity, action string, before, after Object, reason string)
 	} else if before != nil {
 		key = before["id"]
 	}
-	u.exec(`INSERT INTO audit_logs(actor_id,action,entity,entity_id,"before","after",detail,created_at) VALUES(?,?,?,?,?,?,?,?)`, u.actor, action, entity, key, stringify(before), stringify(after), reason, now())
+	u.exec(`INSERT INTO audit_logs(actor_id,action,entity,entity_id,"before","after",detail,created_at) VALUES(?,?,?,?,?,?,?,?)`, u.actor, action, entity, key, stringify(before), stringify(after), reason, u.timestamp)
 }
 func version(m, req Object) error {
 	n, ok := integer(req["expected_version"])
@@ -159,6 +161,16 @@ func (s *Service) Write(ctx context.Context, actor, key, fingerprint string, fn 
 	if u.err != nil {
 		return nil, 0, false, storageError(u.err)
 	}
+	account := u.get("SELECT account_type,status FROM users WHERE id = ?", actor)
+	if u.err != nil {
+		return nil, 0, false, storageError(u.err)
+	}
+	if account == nil || account["status"] != "active" {
+		return nil, 0, false, httpx.Unauthorized("账户不可用")
+	}
+	u.actorType = str(account["account_type"])
+	u.timestamp = now()
+	fingerprint = u.actorType + ":" + fingerprint
 	old := u.get("SELECT * FROM v2_idempotency_requests WHERE actor_id = ? AND idempotency_key = ?", actor, key)
 	if u.err != nil {
 		return nil, 0, false, storageError(u.err)
@@ -183,7 +195,7 @@ func (s *Service) Write(ctx context.Context, actor, key, fingerprint string, fn 
 	if e != nil {
 		return nil, 0, false, e
 	}
-	u.insert("v2_idempotency_requests", Object{"actor_id": actor, "idempotency_key": key, "fingerprint": fingerprint, "response_status": status, "response_body": string(b), "created_at": now(), "expires_at": time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)})
+	u.insert("v2_idempotency_requests", Object{"actor_id": actor, "idempotency_key": key, "fingerprint": fingerprint, "response_status": status, "response_body": string(b), "created_at": u.timestamp, "expires_at": time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)})
 	if u.err != nil {
 		return nil, 0, false, storageError(u.err)
 	}
@@ -246,8 +258,8 @@ func (u *unit) createLot(req Object) (any, error) {
 	m["id"] = id.New()
 	m["sample_identity_key"] = m["sample_identity"]
 	m["version"] = 1
-	m["created_at"] = now()
-	m["updated_at"] = now()
+	m["created_at"] = u.timestamp
+	m["updated_at"] = u.timestamp
 	for _, f := range []string{"sample_raw", "sample_project", "sample_model", "sample_spec", "sample_size", "sample_side"} {
 		if _, ok := m[f]; !ok {
 			m[f] = nil
@@ -267,12 +279,15 @@ func (u *unit) createGroup(lotID string, req Object) (any, error) {
 	if e := requiredString(req, "operation_id"); e != nil {
 		return nil, e
 	}
-	kind := "NORMAL"
+	kind := u.actorType
 	if v, ok := req["inspection_kind"]; ok {
 		kind = str(v)
 	}
 	if !contains([]string{"NORMAL", "SAMPLING"}, kind) {
 		return nil, formatErr("inspection_kind")
+	}
+	if e := u.authorizeKind(kind); e != nil {
+		return nil, e
 	}
 	op, e := u.must("dict_items", str(req["operation_id"]))
 	if e != nil {
@@ -298,6 +313,9 @@ func (u *unit) groupAction(key, action string, req Object) (any, error) {
 	}
 	g, e := u.must("operation_groups", key)
 	if e != nil {
+		return nil, e
+	}
+	if e = u.authorizeKind(str(g["inspection_kind"])); e != nil {
 		return nil, e
 	}
 	if e = version(g, req); e != nil {
@@ -359,9 +377,11 @@ func (u *unit) reserve(sub Object, g Object) error {
 		}
 	}
 	u.insert("submission_slots", Object{"operation_group_id": g["id"], "batch_key": str(sub["batch_no"]), "submission_id": sub["id"]})
+	beforeGroup := clone(g)
 	g["batch_mode"] = scope
 	bump(g)
 	u.update("operation_groups", g)
+	u.audit("operation_group", "reserve", beforeGroup, g, "")
 	return nil
 }
 func (u *unit) revision(sub, content Object, reason string) Object {
@@ -377,7 +397,7 @@ func (u *unit) revision(sub, content Object, reason string) Object {
 			template = str(g["template_version"])
 		}
 	}
-	r := Object{"id": id.New(), "submission_id": sub["id"], "revision_no": num(n["n"]) + 1, "base_revision_id": previous, "template_version": template, "inspection_kind": sub["inspection_kind"], "content": stringify(content), "saved_by": u.actor, "saved_at": now(), "reason": reason, "published_by": nil, "published_at": nil}
+	r := Object{"id": id.New(), "submission_id": sub["id"], "revision_no": num(n["n"]) + 1, "base_revision_id": previous, "template_version": template, "inspection_kind": sub["inspection_kind"], "content": stringify(content), "saved_by": u.actor, "saved_at": u.timestamp, "reason": reason, "saved_reason": reason, "published_by": nil, "published_at": nil}
 	for _, p := range []string{"paper_inspected", "paper_submitted"} {
 		r[p+"_date"] = content[p+"_date"]
 		r[p+"_at"] = content[p+"_at"]
@@ -420,11 +440,14 @@ func (u *unit) createSubmission(req Object) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	kind := "NORMAL"
+	kind := u.actorType
 	if v, ok := req["inspection_kind"]; ok {
 		kind = str(v)
 		if !contains([]string{"NORMAL", "SAMPLING"}, kind) {
 			return nil, formatErr("inspection_kind")
+		}
+		if e = u.authorizeKind(kind); e != nil {
+			return nil, e
 		}
 	}
 	var group Object
@@ -436,10 +459,16 @@ func (u *unit) createSubmission(req Object) (any, error) {
 		if e != nil {
 			return nil, e
 		}
+		if e = u.authorizeKind(str(group["inspection_kind"])); e != nil {
+			return nil, e
+		}
 		if _, ok := req["inspection_kind"]; ok && kind != group["inspection_kind"] {
 			return nil, httpx.Validation("检验类型与工序组不一致", Object{"reason": "inspection_kind_mismatch"})
 		}
 		kind = str(group["inspection_kind"])
+	}
+	if e = u.authorizeKind(kind); e != nil {
+		return nil, e
 	}
 	patch := Object{}
 	if v, ok := req["content"]; ok {
@@ -452,7 +481,7 @@ func (u *unit) createSubmission(req Object) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	sub := Object{"id": id.New(), "operation_group_id": req["operation_group_id"], "inspection_kind": kind, "batch_no": batch, "state": "DRAFT", "version": 1, "current_revision_id": nil, "draft_revision_id": nil, "created_by": u.actor, "created_at": now(), "cancelled_by": nil, "cancelled_at": nil, "cancel_reason": nil}
+	sub := Object{"id": id.New(), "operation_group_id": req["operation_group_id"], "inspection_kind": kind, "batch_no": batch, "state": "DRAFT", "version": 1, "current_revision_id": nil, "draft_revision_id": nil, "created_by": u.actor, "created_at": u.timestamp, "cancelled_by": nil, "cancelled_at": nil, "cancel_reason": nil}
 	u.insert("inspection_submissions", sub)
 	if group != nil {
 		if e = u.reserve(sub, group); e != nil {
@@ -470,6 +499,9 @@ func (u *unit) saveDraft(key string, req Object) (any, error) {
 	}
 	sub, e := u.must("inspection_submissions", key)
 	if e != nil {
+		return nil, e
+	}
+	if e = u.authorizeKind(str(sub["inspection_kind"])); e != nil {
 		return nil, e
 	}
 	if e = version(sub, req); e != nil {
@@ -514,6 +546,9 @@ func (u *unit) saveDraft(key string, req Object) (any, error) {
 		}
 		g, e := u.must("operation_groups", str(req["operation_group_id"]))
 		if e != nil {
+			return nil, e
+		}
+		if e = u.authorizeKind(str(g["inspection_kind"])); e != nil {
 			return nil, e
 		}
 		if sub["inspection_kind"] != g["inspection_kind"] {
@@ -588,6 +623,9 @@ func (u *unit) submissionAction(key, action string, req Object) (any, error) {
 	if e != nil {
 		return nil, e
 	}
+	if e = u.authorizeKind(str(sub["inspection_kind"])); e != nil {
+		return nil, e
+	}
 	if e = version(sub, req); e != nil {
 		return nil, e
 	}
@@ -624,14 +662,14 @@ func (u *unit) submissionAction(key, action string, req Object) (any, error) {
 		if e != nil {
 			return nil, e
 		}
-		u.exec("UPDATE submission_revisions SET published_by = ?, published_at = ?, reason = ? WHERE id = ?", u.actor, now(), str(req["reason"]), r["id"])
+		u.exec("UPDATE submission_revisions SET published_by = ?, published_at = ?, reason = ? WHERE id = ?", u.actor, u.timestamp, str(req["reason"]), r["id"])
 		sub["current_revision_id"] = r["id"]
 		sub["draft_revision_id"] = nil
 		sub["state"] = "PUBLISHED"
 	} else {
 		sub["state"] = "CANCELLED"
 		sub["cancelled_by"] = u.actor
-		sub["cancelled_at"] = now()
+		sub["cancelled_at"] = u.timestamp
 		sub["cancel_reason"] = req["reason"]
 		if sub["operation_group_id"] != nil {
 			u.exec("DELETE FROM submission_slots WHERE submission_id = ?", sub["id"])
@@ -639,6 +677,7 @@ func (u *unit) submissionAction(key, action string, req Object) (any, error) {
 			if e != nil {
 				return nil, e
 			}
+			beforeGroup := clone(g)
 			slots := u.rows("SELECT batch_key FROM submission_slots WHERE operation_group_id = ?", g["id"])
 			g["batch_mode"] = "EMPTY"
 			if len(slots) > 0 {
@@ -649,6 +688,7 @@ func (u *unit) submissionAction(key, action string, req Object) (any, error) {
 			}
 			bump(g)
 			u.update("operation_groups", g)
+			u.audit("operation_group", "release", beforeGroup, g, str(req["reason"]))
 		}
 	}
 	bump(sub)
@@ -734,4 +774,11 @@ func (u *unit) detail(sub Object) Object {
 
 	}
 	return d
+}
+
+func (u *unit) authorizeKind(kind string) error {
+	if kind != u.actorType {
+		return httpx.NewError(403, "forbidden", "账户不能提交另一检验类型", Object{"reason": "inspection_kind_forbidden", "account_type": u.actorType, "inspection_kind": kind})
+	}
+	return nil
 }

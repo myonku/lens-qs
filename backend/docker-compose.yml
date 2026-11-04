@@ -39,7 +39,6 @@ services:
         condition: service_healthy
     environment:
       APP_ENV: prod
-      BUSINESS_WRITE_DOMAIN: ${BUSINESS_WRITE_DOMAIN:-v2}
       APP_ADDR: ":8080"
       DB_DRIVER: postgres
       DB_DSN: "postgres://${POSTGRES_USER:-lens}:${POSTGRES_PASSWORD:-lens}@db:5432/${POSTGRES_DB:-lensqs}?sslmode=disable"

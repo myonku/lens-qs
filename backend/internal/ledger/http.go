@@ -15,7 +15,7 @@ func (s *Service) Register(r *gin.RouterGroup) {
 		r.POST(path, s.writeHTTP)
 	}
 	r.PATCH("/submissions/:id/draft", s.writeHTTP)
-	for _, path := range []string{"/product-lots", "/product-lots/:id", "/product-lots/:id/operation-groups", "/operation-groups/:id", "/submissions", "/submissions/:id", "/submissions/:id/revisions", "/submissions/:id/revisions/:revision_id", "/submissions/:id/diff", "/form-fields", "/form-templates", "/form-templates/:operation_id", "/reports/product-lots/:id", "/stats/summary", "/stats/defects", "/stats/quantity-changes"} {
+	for _, path := range []string{"/product-lots", "/product-lots/:id", "/product-lots/:id/operation-groups", "/operation-groups/:id", "/submissions", "/submissions/:id", "/submissions/:id/revisions", "/submissions/:id/revisions/:revision_id", "/submissions/:id/diff", "/form-fields", "/form-templates", "/form-templates/:operation_id", "/reports/product-lots/:id", "/reports/operations/:operation_id", "/audit-logs", "/stats/summary", "/stats/defects", "/stats/quantity-changes"} {
 		r.GET(path, s.readHTTP)
 	}
 }
@@ -268,6 +268,10 @@ func (s *Service) readHTTP(c *gin.Context) {
 				return nil, httpx.NotFound("")
 			}
 			return Object{"operation": op, "template_version": "v2.1", "fields": fieldCatalog()}, nil
+		case "/reports/operations/:operation_id":
+			return u.operationReport(c.Param("operation_id"), q)
+		case "/audit-logs":
+			return u.auditList(q)
 		case "/reports/product-lots/:id":
 			return u.report(key, q)
 		case "/stats/summary", "/stats/defects", "/stats/quantity-changes":
@@ -327,5 +331,5 @@ func fieldCatalog() Object {
 	for _, name := range []string{"pass_rate", "line_totals", "declared_differences", "is_complete", "missing_fields", "paper_inspected_day", "paper_submitted_day"} {
 		fields = append(fields, Object{"name": name, "read_only": true})
 	}
-	return Object{"template_version": "v2.1", "fields": fields, "defects": formfields.DefectGroups, "surfaces": formfields.Surfaces, "surface_labels": formfields.SurfaceLabels, "lines": Object{"replacement": "array", "nullable": false}, "quantity_changes": Object{"replacement": "array", "kinds": []string{"LOSS", "ADJUSTMENT", "OTHER"}, "directions": []string{"DECREASE", "INCREASE", "UNKNOWN"}, "quantity_nullable": true}, "date_format": "YYYY-MM-DD", "instant_format": "YYYY-MM-DDTHH:mm:ssZ", "business_timezone": "Asia/Shanghai", "inspection_kinds": []string{"NORMAL", "SAMPLING"}, "sampling_loss_validation": "caller", "unknown_is_zero": false}
+	return Object{"template_version": "v2.1", "fields": fields, "defects": formfields.DefectGroups, "surfaces": formfields.Surfaces, "surface_labels": formfields.SurfaceLabels, "lines": Object{"replacement": "array", "nullable": false}, "quantity_changes": Object{"replacement": "array", "kinds": []string{"LOSS", "ADJUSTMENT", "OTHER"}, "directions": []string{"DECREASE", "INCREASE", "UNKNOWN"}, "quantity_nullable": true}, "date_format": "YYYY-MM-DD", "instant_format": "YYYY-MM-DDTHH:mm:ssZ", "business_timezone": "Asia/Shanghai", "inspection_kinds": []string{"NORMAL", "SAMPLING"}, "sampling_loss_validation": "caller", "inspection_kind_source": "authenticated_account", "unknown_is_zero": false}
 }

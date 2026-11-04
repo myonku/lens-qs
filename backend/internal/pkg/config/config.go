@@ -12,9 +12,8 @@ import (
 // Config 是应用的全部可配置项。
 type Config struct {
 	// App
-	BusinessWriteDomain string // legacy | v2: exactly one writable business domain
-	Env                 string // dev | prod
-	Addr                string // 监听地址，如 :8080
+	Env  string // dev | prod
+	Addr string // 监听地址，如 :8080
 
 	// DB
 	DBDriver  string // sqlite | postgres
@@ -30,9 +29,6 @@ type Config struct {
 	CookieName     string
 	CookieSecure   bool
 	CORSOrigins    []string
-
-	// 幂等（写接口重复提交保护）：<=0 表示关闭
-	IdempotencyTTL time.Duration
 
 	// Bootstrap
 	BootstrapAdminUser string
@@ -51,13 +47,12 @@ func Load() (*Config, error) {
 	LoadDotEnv(".env", "backend/.env")
 
 	c := &Config{
-		BusinessWriteDomain: env("BUSINESS_WRITE_DOMAIN", "v2"),
-		Env:                 env("APP_ENV", "dev"),
-		Addr:                env("APP_ADDR", ":8080"),
-		DBDriver:            strings.ToLower(env("DB_DRIVER", "sqlite")),
-		DBDSN:               env("DB_DSN", "./data/lens.db"),
-		DBMaxOpen:           envInt("DB_MAX_OPEN", 10),
-		DBMaxIdle:           envInt("DB_MAX_IDLE", 5),
+		Env:       env("APP_ENV", "dev"),
+		Addr:      env("APP_ADDR", ":8080"),
+		DBDriver:  strings.ToLower(env("DB_DRIVER", "sqlite")),
+		DBDSN:     env("DB_DSN", "./data/lens.db"),
+		DBMaxOpen: envInt("DB_MAX_OPEN", 10),
+		DBMaxIdle: envInt("DB_MAX_IDLE", 5),
 
 		SessionTTL:     envDuration("SESSION_TTL", 12*time.Hour),
 		SessionIdleTTL: envDuration("SESSION_IDLE_TTL", 2*time.Hour),
@@ -67,16 +62,11 @@ func Load() (*Config, error) {
 		CookieSecure:   envBool("COOKIE_SECURE", false),
 		CORSOrigins:    envList("CORS_ORIGINS", nil),
 
-		IdempotencyTTL: envDuration("IDEMPOTENCY_TTL", 24*time.Hour),
-
 		BootstrapAdminUser: env("BOOTSTRAP_ADMIN_USER", ""),
 		BootstrapAdminPass: env("BOOTSTRAP_ADMIN_PASS", ""),
 		AutoMigrate:        envBool("AUTO_MIGRATE", false),
 	}
 
-	if c.BusinessWriteDomain != "legacy" && c.BusinessWriteDomain != "v2" {
-		return nil, fmt.Errorf("BUSINESS_WRITE_DOMAIN 必须为 legacy 或 v2")
-	}
 	switch c.DBDriver {
 	case "sqlite", "sqlite3":
 		c.DBDriver = "sqlite"

@@ -25,10 +25,11 @@ import (
 )
 
 type harness struct {
-	t  *testing.T
-	db *sqlx.DB
-	r  *gin.Engine
-	n  int
+	t     *testing.T
+	db    *sqlx.DB
+	r     *gin.Engine
+	n     int
+	actor string
 }
 
 func newHarness(t *testing.T) *harness {
@@ -37,7 +38,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	return harnessDB(t, store.NewTestDB(t))
 }
-func postgresHarness(t *testing.T) *harness {
+func postgresDatabase(t *testing.T) *sqlx.DB {
 	t.Helper()
 	dsn := os.Getenv("LENS_TEST_POSTGRES_DSN")
 	admin, e := database.Open("postgres", dsn, 2, 1)
@@ -61,7 +62,11 @@ func postgresHarness(t *testing.T) *harness {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { db.Close() })
-	if _, e = store.Migrate(context.Background(), db, "postgres"); e != nil {
+	return db
+}
+func postgresHarness(t *testing.T) *harness {
+	db := postgresDatabase(t)
+	if _, e := store.Migrate(context.Background(), db, "postgres"); e != nil {
 		t.Fatal(e)
 	}
 	if applied, e := store.Migrate(context.Background(), db, "postgres"); e != nil || len(applied) != 0 {
@@ -75,6 +80,9 @@ func harnessDB(t *testing.T, db *sqlx.DB) *harness {
 	if e != nil {
 		t.Fatal(e)
 	}
+	if _, e = db.Exec("INSERT INTO users(id,username,password_hash,account_type) VALUES('sampler','sampler','unchanged','SAMPLING')"); e != nil {
+		t.Fatal(e)
+	}
 	for _, op := range []string{"a", "b", "c"} {
 		_, e = db.Exec(db.Rebind(`INSERT INTO dict_items(id,category,code,label,active) VALUES(?, 'inspection_operation', ?, ?, 1)`), op, op, op)
 		if e != nil {
@@ -83,8 +91,8 @@ func harnessDB(t *testing.T, db *sqlx.DB) *harness {
 	}
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	New(db).Register(r.Group("/api/v2", func(c *gin.Context) { c.Set(middleware.CtxUserID, "actor") }))
-	return &harness{t: t, db: db, r: r}
+	New(db).Register(r.Group("/api/v2", func(c *gin.Context) { c.Set(middleware.CtxUserID, c.GetHeader("X-Test-Actor")) }))
+	return &harness{t: t, db: db, r: r, actor: "actor"}
 }
 func (h *harness) call(method, path, key string, req any) (int, Object, *httptest.ResponseRecorder) {
 	h.t.Helper()
@@ -95,6 +103,7 @@ func (h *harness) call(method, path, key string, req any) (int, Object, *httptes
 		b, _ = json.Marshal(req)
 	}
 	r := httptest.NewRequest(method, "/api/v2"+path, bytes.NewReader(b))
+	r.Header.Set("X-Test-Actor", h.actor)
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("X-Idempotency-Key", key)
 	w := httptest.NewRecorder()
@@ -108,6 +117,27 @@ func (h *harness) call(method, path, key string, req any) (int, Object, *httptes
 func (h *harness) write(path string, req any) Object {
 	h.t.Helper()
 	h.n++
+	previous := h.actor
+	if m := obj(req); m != nil {
+		kind := str(m["inspection_kind"])
+		if group := str(m["operation_group_id"]); group != "" {
+			_ = h.db.Get(&kind, h.db.Rebind("SELECT inspection_kind FROM operation_groups WHERE id = ?"), group)
+		}
+		for _, prefix := range []string{"/submissions/", "/operation-groups/"} {
+			if strings.HasPrefix(path, prefix) {
+				parts := strings.Split(strings.TrimPrefix(path, prefix), "/")
+				table := "inspection_submissions"
+				if prefix == "/operation-groups/" {
+					table = "operation_groups"
+				}
+				_ = h.db.Get(&kind, h.db.Rebind("SELECT inspection_kind FROM "+table+" WHERE id = ?"), parts[0])
+			}
+		}
+		if kind == "SAMPLING" {
+			h.actor = "sampler"
+		}
+	}
+	defer func() { h.actor = previous }()
 	s, m, _ := h.call("POST", path, fmt.Sprint(h.n), req)
 	if s != 200 && s != 201 {
 		h.t.Fatalf("POST %s: %d %v", path, s, m)
@@ -247,8 +277,10 @@ func TestSlotsAndAtomicBatch(t *testing.T) {
 	h.publish(obj(sd["items"].([]any)[0]), "")
 	group = h.get("/operation-groups/" + sg)
 	closed := h.write("/operation-groups/"+sg+"/close", Object{"expected_version": group["version"], "reason": "结束"})
+	h.actor = "sampler"
 	status, m, _ = h.call("POST", "/submissions", "closed-create", Object{"operation_group_id": sg})
 	requireReason(t, status, m, "operation_group_closed")
+	h.actor = "actor"
 	h.write("/operation-groups/"+sg+"/reopen", Object{"expected_version": closed["version"], "reason": "继续"})
 	cg := h.group(lot, "c", "NORMAL")
 	status, m, _ = h.call("POST", "/submissions/batch", "atomic", Object{"items": []any{Object{"operation_group_id": cg, "batch_no": "a"}, Object{"operation_group_id": cg}}})
@@ -333,7 +365,7 @@ func TestUnknownAndValidation(t *testing.T) {
 	detached := h.write("/submissions", Object{"inspection_kind": "SAMPLING", "batch_no": "x"})
 	ds := obj(detached["submission"])
 	status, m, _ := h.call("PATCH", "/submissions/"+str(ds["id"])+"/draft", "mismatch", Object{"expected_version": ds["version"], "operation_group_id": g})
-	if status != 422 || obj(m["details"])["reason"] != "inspection_kind_mismatch" {
+	if status != 403 || obj(m["details"])["reason"] != "inspection_kind_forbidden" {
 		t.Fatal(status, m)
 	}
 	unassigned := h.write("/submissions", Object{})

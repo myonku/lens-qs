@@ -19,6 +19,7 @@ import (
 
 // User 对应数据库表 users。
 type User struct {
+	AccountType    string  `db:"account_type" json:"account_type"`
 	ID             string  `db:"id" json:"id"`
 	Username       string  `db:"username" json:"username"`
 	DisplayName    string  `db:"display_name" json:"display_name"`
@@ -50,7 +51,7 @@ func (s *Store) DB() *sqlx.DB { return s.db }
 func (s *Store) rebind(q string) string { return s.db.Rebind(q) }
 
 const columns = `id, username, display_name, employee_no, unit_id, password_hash,
-	is_admin, must_change_pwd, status, failed_attempts, locked_until, last_login_at,
+	is_admin, account_type, must_change_pwd, status, failed_attempts, locked_until, last_login_at,
 	created_at, updated_at`
 
 // GetByID 按主键取用户。
@@ -115,6 +116,7 @@ func (s *Store) Count(ctx context.Context) (int, error) {
 
 // CreateInput 是创建用户的输入。
 type CreateInput struct {
+	AccountType   string
 	Username      string
 	Password      string
 	DisplayName   string
@@ -126,6 +128,12 @@ type CreateInput struct {
 
 // Create 创建用户。
 func (s *Store) Create(ctx context.Context, in CreateInput) (*User, error) {
+	if in.AccountType == "" {
+		in.AccountType = "NORMAL"
+	}
+	if !validAccountType(in.AccountType) {
+		return nil, httpx.BadRequest("account_type 必须为 NORMAL 或 SAMPLING")
+	}
 	username := strings.TrimSpace(in.Username)
 	if username == "" {
 		return nil, httpx.BadRequest("登录名（username）不能为空")
@@ -149,6 +157,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (*User, error) {
 	}
 	now := store.FormatTime(time.Now())
 	u := &User{
+		AccountType:   in.AccountType,
 		ID:            id.New(),
 		Username:      username,
 		DisplayName:   name,
@@ -163,7 +172,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (*User, error) {
 	}
 	_, err = store.NamedExec(ctx, s.db, `INSERT INTO users (`+columns+`) VALUES (
 		:id, :username, :display_name, :employee_no, :unit_id, :password_hash,
-		:is_admin, :must_change_pwd, :status, :failed_attempts, :locked_until, :last_login_at,
+		:is_admin, :account_type, :must_change_pwd, :status, :failed_attempts, :locked_until, :last_login_at,
 		:created_at, :updated_at)`, u)
 	if err != nil {
 		return nil, fmt.Errorf("创建用户失败: %w", err)
@@ -173,6 +182,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (*User, error) {
 
 // UpdateInput 是修改用户的输入（nil 表示不改）。
 type UpdateInput struct {
+	AccountType *string
 	DisplayName *string
 	EmployeeNo  *string
 	UnitID      *string
@@ -183,12 +193,30 @@ type UpdateInput struct {
 
 // Update 修改用户。
 func (s *Store) Update(ctx context.Context, userID string, in UpdateInput) (*User, error) {
-	u, err := s.GetByID(ctx, userID)
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, "UPDATE v2_write_lock SET version = version + 1 WHERE id = 1"); err != nil {
+		return nil, err
+	}
+	u := &User{}
+	err = tx.GetContext(ctx, u, tx.Rebind("SELECT "+columns+" FROM users WHERE id = ?"), userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, httpx.NotFound("用户不存在")
+	}
 	if err != nil {
 		return nil, err
 	}
 	if u == nil {
 		return nil, httpx.NotFound("用户不存在")
+	}
+	if in.AccountType != nil {
+		if !validAccountType(*in.AccountType) {
+			return nil, httpx.BadRequest("account_type 必须为 NORMAL 或 SAMPLING")
+		}
+		u.AccountType = *in.AccountType
 	}
 	if in.DisplayName != nil {
 		u.DisplayName = strings.TrimSpace(*in.DisplayName)
@@ -223,13 +251,32 @@ func (s *Store) Update(ctx context.Context, userID string, in UpdateInput) (*Use
 	}
 	u.UpdatedAt = store.FormatTime(time.Now())
 
-	_, err = store.NamedExec(ctx, s.db, `UPDATE users SET
+	query, args, err := sqlx.Named(`UPDATE users SET
 		display_name = :display_name, employee_no = :employee_no, unit_id = :unit_id,
-		password_hash = :password_hash, is_admin = :is_admin, status = :status,
+		password_hash = :password_hash, is_admin = :is_admin, account_type = :account_type, status = :status,
 		failed_attempts = :failed_attempts, locked_until = :locked_until, updated_at = :updated_at
 		WHERE id = :id`, u)
 	if err != nil {
+		return nil, err
+	}
+	for i, v := range args {
+		if b, ok := v.(bool); ok {
+			args[i] = store.BoolInt(b)
+		}
+	}
+	if _, err = tx.ExecContext(ctx, tx.Rebind(query), args...); err != nil {
 		return nil, fmt.Errorf("更新用户失败: %w", err)
+	}
+	if in.AccountType != nil || in.Password != nil || in.Status != nil && *in.Status == "disabled" {
+		if _, err = tx.ExecContext(ctx, tx.Rebind("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL"), nowTime(), u.ID); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, tx.Rebind("DELETE FROM v2_idempotency_requests WHERE actor_id = ?"), u.ID); err != nil {
+			return nil, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
 	}
 	return u, nil
 }
@@ -264,3 +311,6 @@ func blankToNil(s string) *string {
 	}
 	return &s
 }
+
+func validAccountType(s string) bool { return s == "NORMAL" || s == "SAMPLING" }
+func nowTime() string                { return store.FormatTime(time.Now()) }

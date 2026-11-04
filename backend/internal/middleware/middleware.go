@@ -25,6 +25,7 @@ type Authenticator interface {
 
 // Principal 是认证后的调用者身份。
 type Principal struct {
+	AccountType string `json:"account_type"`
 	UserID      string
 	Username    string
 	DisplayName string

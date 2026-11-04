@@ -3,13 +3,13 @@
 # 用法：
 #   pwsh -File scripts\dev.ps1                # 前台运行（Ctrl+C 停止，能看实时日志）
 #   pwsh -File scripts\dev.ps1 -NoWait        # 后台运行并做健康检查
-#   pwsh -File scripts\dev.ps1 -Reset         # 删库重建（会清掉本地数据，重新引导管理员）
+#   pwsh -File scripts\dev.ps1 -ResetTestData # 清理测试业务，保留账户与字典
 #   pwsh -File scripts\dev.ps1 -Port 8081     # 换端口
 #
 # 账号：管理员由 backend/.env 的 BOOTSTRAP_ADMIN_USER / BOOTSTRAP_ADMIN_PASS 决定，
-#       **仅在数据库里一个用户都没有时**创建（所以首次启动或 -Reset 之后才会生效）。
+#       **仅在数据库里一个用户都没有时**创建（清理测试数据不会重建或重设账户）。
 param(
-    [switch]$Reset,
+    [switch]$ResetTestData,
     [int]$Port = 0,
     [switch]$NoSeed,
     [switch]$NoWait
@@ -62,18 +62,6 @@ Write-Host "  监听地址 : $addr"
 Write-Host "  数据库   : $dbDriver / $dbDsn"
 Write-Host "  跨域来源 : $(if ($cors) { $cors } else { '(未设置 → 不下发 CORS 头，浏览器联调会被拦)' })"
 
-if ($Reset) {
-    if ($dbDriver -eq "sqlite") {
-        $dbPath = Join-Path $root ($dbDsn -replace '^\./', '')
-        foreach ($suffix in @("", "-shm", "-wal")) {
-            $p = "$dbPath$suffix"
-            if (Test-Path $p) { Remove-Item $p -Force; Write-Host "  已删除 $p" }
-        }
-    } else {
-        Write-Warning "-Reset 仅对 sqlite 生效；postgres 请手工清库"
-    }
-}
-
 Write-Host "`n[1/4] 构建..." -ForegroundColor Green
 New-Item -ItemType Directory -Force -Path (Join-Path $root "bin") | Out-Null
 go build -o bin/lens-qs-api.exe ./cmd/api
@@ -81,11 +69,13 @@ if ($LASTEXITCODE -ne 0) { throw "构建失败" }
 go build -o bin/lens-qs-migrate.exe ./cmd/migrate
 go build -o bin/lens-qs-seed.exe ./cmd/seed
 go build -o bin/lens-qs-createuser.exe ./cmd/createuser
-go build -o bin/lens-qs-rebuild.exe ./cmd/rebuild
+go build -o bin/lens-qs-reset-testdata.exe ./cmd/reset-testdata
 
 Write-Host "`n[2/4] 迁移..." -ForegroundColor Green
 & ./bin/lens-qs-migrate.exe
 if ($LASTEXITCODE -ne 0) { throw "迁移失败" }
+
+if ($ResetTestData) { & ./bin/lens-qs-reset-testdata.exe -confirm-test-data; if ($LASTEXITCODE -ne 0) { throw "测试数据清理失败" } }
 
 if (-not $NoSeed) {
     Write-Host "`n[3/4] 初始化字典..." -ForegroundColor Green
@@ -140,14 +130,14 @@ if ($NoWait) {
 }
 
 Write-Host "  健康检查 : $base/healthz"
-Write-Host "  接口前缀 : $base/api"
+Write-Host "  接口前缀 : $base/api/v2"
 Write-Host "`n登录账号：" -ForegroundColor Yellow
 Write-Host "  管理员   : $adminUser / $adminPass"
 Write-Host "  （管理员只在"库里没有任何用户"时自动创建；若库里已有用户，"
 Write-Host "    请用 bin\lens-qs-createuser.exe -username xx -password yy -admin 新建）"
 Write-Host "`n常用验证命令：" -ForegroundColor DarkGray
 Write-Host @"
-  `$t = (Invoke-RestMethod -Uri "$base/api/auth/login" -Method Post -ContentType 'application/json' -Body '{"username":"$adminUser","password":"$adminPass"}').data.token
-  Invoke-RestMethod -Uri "$base/api/form-fields" -Headers @{ Authorization = "Bearer `$t" }
+  `$t = (Invoke-RestMethod -Uri "$base/api/v2/auth/login" -Method Post -ContentType 'application/json' -Body '{"username":"$adminUser","password":"$adminPass"}').data.token
+  Invoke-RestMethod -Uri "$base/api/v2/form-fields" -Headers @{ Authorization = "Bearer `$t" }
 "@
 Write-Host "`n停止服务： Stop-Process -Name lens-qs-api -Force   （或 Stop-Process -Id <PID>）" -ForegroundColor DarkGray

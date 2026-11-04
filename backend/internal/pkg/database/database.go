@@ -36,8 +36,19 @@ func Open(driver, dsn string, maxOpen, maxIdle int) (*sqlx.DB, error) {
 func openSQLite(path string, maxOpen, maxIdle int) (*sqlx.DB, error) {
 	// 纯 Go 驱动不支持多写连接；限制为单写连接避免 SQLITE_BUSY。
 	dsn := path
-	if !strings.Contains(dsn, "?") {
-		dsn += "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	// Keep every connection safe even when a custom URI already has options.
+	// In-memory temporary storage also avoids Windows VFS temp-file failures
+	// during legacy-table/index cleanup. Explicit temp_store settings are respected.
+	for _, pragma := range []string{"busy_timeout(5000)", "journal_mode(WAL)", "foreign_keys(1)", "temp_store(MEMORY)"} {
+		name := pragma[:strings.IndexByte(pragma, '(')]
+		if !strings.Contains(strings.ToLower(dsn), name+"(") && !strings.Contains(strings.ToLower(dsn), name+"%28") {
+			dsn += separator + "_pragma=" + pragma
+			separator = "&"
+		}
 	}
 	db, err := sqlx.Open("sqlite", dsn)
 	if err != nil {

@@ -23,6 +23,7 @@ func main() {
 	name := flag.String("name", "", "显示名（默认同登录名）")
 	empNo := flag.String("emp", "", "工号")
 	unit := flag.String("unit", "", "所属单位")
+	accountType := flag.String("account-type", "", "NORMAL 或 SAMPLING；创建默认 NORMAL，更新省略则保持")
 	isAdmin := flag.Bool("admin", false, "是否管理员")
 	update := flag.Bool("update", false, "已存在时更新（改密码 / 改管理员标记）")
 	noMigrate := flag.Bool("skip-migrate", false, "不自动执行迁移")
@@ -59,7 +60,7 @@ func main() {
 		if !*update {
 			log.Fatalf("[fatal] 用户已存在: %s（如需更新请加 -update）", *username)
 		}
-		u, err := st.Update(ctx, existing.ID, users.UpdateInput{
+		u, err := st.Update(ctx, existing.ID, users.UpdateInput{AccountType: opt(*accountType),
 			DisplayName: opt(*name),
 			EmployeeNo:  opt(*empNo),
 			UnitID:      opt(*unit),
@@ -73,7 +74,7 @@ func main() {
 		return
 	}
 
-	u, err := st.Create(ctx, users.CreateInput{
+	u, err := st.Create(ctx, users.CreateInput{AccountType: *accountType,
 		Username:      *username,
 		Password:      *password,
 		DisplayName:   *name,

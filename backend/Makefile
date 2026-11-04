@@ -6,7 +6,6 @@ APP        := lens-qs-api
 MIGRATE    := lens-qs-migrate
 SEED       := lens-qs-seed
 CREATEUSER := lens-qs-createuser
-REBUILD    := lens-qs-rebuild
 
 GOFLAGS ?=
 DB_DRIVER ?= sqlite
@@ -31,7 +30,7 @@ build: ## 编译全部命令到 bin/
 	go build -o $(BINARY_DIR)/$(MIGRATE) ./cmd/migrate
 	go build -o $(BINARY_DIR)/$(SEED) ./cmd/seed
 	go build -o $(BINARY_DIR)/$(CREATEUSER) ./cmd/createuser
-	go build -o $(BINARY_DIR)/$(REBUILD) ./cmd/rebuild
+	go build -o $(BINARY_DIR)/lens-qs-reset-testdata ./cmd/reset-testdata
 
 .PHONY: run
 run: ## 启动服务（前台）
@@ -77,10 +76,5 @@ docker-down: ## 停止 docker compose
 	docker compose down
 
 .PHONY: clean
-clean: ## 清理构建产物与本地数据库
+clean: ## 仅清理构建产物
 	rm -rf $(BINARY_DIR)
-	rm -f data/*.db data/*.db-shm data/*.db-wal
-
-.PHONY: rebuild-inventory
-rebuild-inventory: ## 只读盘点旧记录与迁移风险
-	go run ./cmd/rebuild

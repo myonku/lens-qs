@@ -6,7 +6,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/myonku/lens-qs-api/internal/inspection"
 	"github.com/myonku/lens-qs-api/internal/middleware"
 	"github.com/myonku/lens-qs-api/internal/pkg/httpx"
 	"github.com/myonku/lens-qs-api/internal/sample"
@@ -14,21 +13,17 @@ import (
 
 // Handler 聚合样品信息接口。
 type Handler struct {
-	svc     *sample.Service
-	inspSvc *inspection.Service
+	svc *sample.Service
 }
 
 // New 构造 Handler。
-func New(svc *sample.Service, insp *inspection.Service) *Handler {
-	return &Handler{svc: svc, inspSvc: insp}
-}
+func New(svc *sample.Service) *Handler { return &Handler{svc: svc} }
 
 // Register 注册接口。
 func (h *Handler) Register(r *gin.RouterGroup) {
 	r.POST("/sample/parse", h.parse)
 	r.POST("/sample/confirm", h.confirm)
 	r.GET("/sample/cache", h.cacheInfo)
-	r.GET("/sample/pending", h.pending)
 }
 
 type parseReq struct {
@@ -96,22 +91,4 @@ func (h *Handler) cacheInfo(c *gin.Context) {
 	}
 	httpx.OK(c, gin.H{"normalized_key": sample.NormalizeKey(raw), "from_cache": res.FromCache,
 		"tokens": res.Parsed.Tokens, "unknown_tokens": res.Parsed.Unknown})
-}
-
-// pending 列出需要人工核对的表单（样品信息未拆解出「项目」等结构化项）。
-func (h *Handler) pending(c *gin.Context) {
-	list, total, err := h.inspSvc.Store().ListSubmissions(c.Request.Context(), inspection.FormFilter{
-		State:            "ACTIVE",
-		SampleUnresolved: true,
-		Limit:            100,
-	})
-	if err != nil {
-		httpx.Fail(c, err)
-		return
-	}
-	if list == nil {
-		list = []inspection.Submission{}
-	}
-	httpx.OK(c, gin.H{"items": list, "total": total,
-		"note": "这些表单的样品信息尚未拆解出「项目」等结构化项；不影响保存，仅供人工核对补录"})
 }
