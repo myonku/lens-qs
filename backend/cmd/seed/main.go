@@ -18,7 +18,6 @@ import (
 	"strings"
 
 	"github.com/myonku/lens-qs-api/internal/dictionary"
-	"github.com/myonku/lens-qs-api/internal/operations"
 	"github.com/myonku/lens-qs-api/internal/pkg/config"
 	"github.com/myonku/lens-qs-api/internal/pkg/database"
 	"github.com/myonku/lens-qs-api/internal/store"
@@ -71,11 +70,11 @@ func seedDict(ctx context.Context, st *dictionary.Store) error {
 	}
 	items := []item{
 		// 工序（检验工序）：表单的第一列，也是"找到自己工序所在表单"的依据。
-		// 与 internal/operations 的注册表保持一致；新增工序可直接往这里加。
-		{dictionary.CategoryProcess, operations.Default, "一般检验", 0},
+		// 工序引用稳定字典 ID，后续可以维护。
+		{dictionary.CategoryProcess, "GENERAL", "一般检验", 0},
 		{dictionary.CategoryProcess, "一次加硬", "一次加硬", 10},
 		{dictionary.CategoryProcess, "二次加硬", "二次加硬", 20},
-		{dictionary.CategoryInspectionOp, operations.Default, "一般检验", 0},
+		{dictionary.CategoryInspectionOp, "GENERAL", "一般检验", 0},
 		{dictionary.CategoryInspectionOp, "一次加硬", "一次加硬", 10},
 		{dictionary.CategoryInspectionOp, "二次加硬", "二次加硬", 20},
 

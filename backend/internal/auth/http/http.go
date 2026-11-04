@@ -33,7 +33,7 @@ func (h *Handler) RegisterPublic(r *gin.RouterGroup) {
 }
 
 // RegisterAuthed 注册需要登录的接口。
-// 注意："谁能否做什么"的判定集中在 middleware 的 Auth / AdminOnly，两级（普通用户 / 管理员）。
+// 用户管理使用管理员权限；检验业务另按 account_type 隔离。
 func (h *Handler) RegisterAuthed(r *gin.RouterGroup) {
 	r.POST("/auth/logout", h.logout)
 	r.GET("/auth/me", h.me)
@@ -63,10 +63,11 @@ func (h *Handler) login(c *gin.Context) {
 	}
 	h.setCookie(c, res.Token)
 	httpx.OK(c, gin.H{
-		"token":      res.Token,
-		"expires_at": res.ExpiresAt,
-		"user":       res.User,
-		"note":       "浏览器可用 Cookie；其它调用方可使用 Authorization: Bearer <token>",
+		"token":        res.Token,
+		"expires_at":   res.ExpiresAt,
+		"user":         res.User,
+		"account_type": res.User.AccountType, "submission_inspection_kind": res.User.AccountType,
+		"note": "浏览器可用 Cookie；其它调用方可使用 Authorization: Bearer <token>",
 	})
 }
 
@@ -90,7 +91,7 @@ func (h *Handler) me(c *gin.Context) {
 		httpx.Fail(c, httpx.NotFound("用户不存在"))
 		return
 	}
-	httpx.OK(c, gin.H{"user": u, "is_admin": u.IsAdmin})
+	httpx.OK(c, gin.H{"user": u, "is_admin": u.IsAdmin, "account_type": u.AccountType, "submission_inspection_kind": u.AccountType})
 }
 
 type changePwdReq struct {
@@ -123,12 +124,13 @@ func (h *Handler) listUsers(c *gin.Context) {
 }
 
 type createUserReq struct {
-	Username    string `json:"username" binding:"required"`
-	Password    string `json:"password" binding:"required"`
-	DisplayName string `json:"display_name"`
-	EmployeeNo  string `json:"employee_no"`
-	UnitID      string `json:"unit_id"`
-	IsAdmin     bool   `json:"is_admin"`
+	AccountType *string `json:"account_type"`
+	Username    string  `json:"username" binding:"required"`
+	Password    string  `json:"password" binding:"required"`
+	DisplayName string  `json:"display_name"`
+	EmployeeNo  string  `json:"employee_no"`
+	UnitID      string  `json:"unit_id"`
+	IsAdmin     bool    `json:"is_admin"`
 }
 
 func (h *Handler) createUser(c *gin.Context) {
@@ -137,7 +139,16 @@ func (h *Handler) createUser(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
+	accountType := "NORMAL"
+	if req.AccountType != nil {
+		accountType = *req.AccountType
+		if accountType != "NORMAL" && accountType != "SAMPLING" {
+			httpx.Fail(c, httpx.BadRequest("非法 account_type"))
+			return
+		}
+	}
 	u, err := h.users.Create(c.Request.Context(), users.CreateInput{
+		AccountType:   accountType,
 		Username:      req.Username,
 		Password:      req.Password,
 		DisplayName:   req.DisplayName,
@@ -154,6 +165,7 @@ func (h *Handler) createUser(c *gin.Context) {
 }
 
 type updateUserReq struct {
+	AccountType *string `json:"account_type"`
 	DisplayName *string `json:"display_name"`
 	EmployeeNo  *string `json:"employee_no"`
 	UnitID      *string `json:"unit_id"`
@@ -177,7 +189,7 @@ func (h *Handler) updateUser(c *gin.Context) {
 		httpx.Fail(c, httpx.BadRequest("不能停用自己的账号"))
 		return
 	}
-	u, err := h.users.Update(c.Request.Context(), targetID, users.UpdateInput{
+	u, err := h.users.Update(c.Request.Context(), targetID, users.UpdateInput{AccountType: req.AccountType,
 		DisplayName: req.DisplayName,
 		EmployeeNo:  req.EmployeeNo,
 		UnitID:      req.UnitID,
@@ -210,7 +222,7 @@ func pageParams(c *gin.Context) (page, size int) {
 	if n, err := strconv.Atoi(c.Query("page")); err == nil && n > 0 {
 		page = n
 	}
-	if n, err := strconv.Atoi(c.Query("page_size")); err == nil && n > 0 && n <= 200 {
+	if n, err := strconv.Atoi(c.Query("page_size")); err == nil && n > 0 && n <= 100 {
 		size = n
 	}
 	return page, size

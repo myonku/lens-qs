@@ -159,6 +159,7 @@ func (s *Service) Authenticate(token string) (*middleware.Principal, error) {
 		store.FormatTime(now), sess.ID)
 
 	return &middleware.Principal{
+		AccountType: u.AccountType,
 		UserID:      u.ID,
 		Username:    u.Username,
 		DisplayName: u.DisplayName,

@@ -15,14 +15,11 @@ import (
 
 	"github.com/myonku/lens-qs-api/internal/auth"
 	"github.com/myonku/lens-qs-api/internal/dictionary"
-	"github.com/myonku/lens-qs-api/internal/idempotency"
-	"github.com/myonku/lens-qs-api/internal/inspection"
 	"github.com/myonku/lens-qs-api/internal/ledger"
 	"github.com/myonku/lens-qs-api/internal/pkg/config"
 	"github.com/myonku/lens-qs-api/internal/pkg/database"
 	"github.com/myonku/lens-qs-api/internal/sample"
 	"github.com/myonku/lens-qs-api/internal/server"
-	"github.com/myonku/lens-qs-api/internal/stats"
 	"github.com/myonku/lens-qs-api/internal/store"
 	"github.com/myonku/lens-qs-api/internal/users"
 )
@@ -60,17 +57,7 @@ func main() {
 	}, cfg.DBDriver)
 
 	dictStore := dictionary.NewStore(db, cfg.DBDriver)
-	inspStore := inspection.NewStore(db, cfg.DBDriver)
-	inspSvc := inspection.NewService(inspStore)
 	sampleSvc := sample.NewService(db, dictStore, cfg.DBDriver)
-	statsSvc := stats.NewService(db, cfg.DBDriver)
-
-	// 幂等：IDEMPOTENCY_TTL <= 0 时关闭
-	var idemStore *idempotency.Store
-	if cfg.IdempotencyTTL > 0 {
-		idemStore = idempotency.NewStore(db, cfg.DBDriver, cfg.IdempotencyTTL)
-		log.Printf("[info] 幂等已启用（TTL=%s；键来源：X-Idempotency-Key 或请求体 client_request_id）", cfg.IdempotencyTTL)
-	}
 
 	// 首次启动时按环境变量创建管理员（数据库为空时才创建）
 	if err := bootstrapAdmin(ctx, userStore, cfg); err != nil {
@@ -78,15 +65,12 @@ func main() {
 	}
 
 	engine := server.Build(server.Deps{
-		Cfg:         cfg,
-		Ledger:      ledger.New(db),
-		Auth:        authSvc,
-		UserStore:   userStore,
-		Dict:        dictStore,
-		Sample:      sampleSvc,
-		Inspection:  inspSvc,
-		Stats:       statsSvc,
-		Idempotency: idemStore,
+		Cfg:       cfg,
+		Ledger:    ledger.New(db),
+		Auth:      authSvc,
+		UserStore: userStore,
+		Dict:      dictStore,
+		Sample:    sampleSvc,
 	})
 
 	srv := &http.Server{

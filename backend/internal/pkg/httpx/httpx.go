@@ -9,8 +9,11 @@
 package httpx
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/gin-gonic/gin/binding"
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -106,10 +109,10 @@ func firstOrNil(v []any) any {
 
 // Issue 是一条校验提示。level 为 "warning" 时不影响保存；为 "error" 时表示阻断。
 type Issue struct {
-	Rule    string `json:"rule"`              // 规则编号，如 V-1
-	Level   string `json:"level"`             // warning | error
-	Field   string `json:"field,omitempty"`   // 相关字段
-	Message string `json:"message"`           // 可读说明
+	Rule    string `json:"rule"`            // 规则编号，如 V-1
+	Level   string `json:"level"`           // warning | error
+	Field   string `json:"field,omitempty"` // 相关字段
+	Message string `json:"message"`         // 可读说明
 }
 
 // Warnings 过滤出 warning 级别的问题。
@@ -181,8 +184,21 @@ func Fail(c *gin.Context, err error) {
 
 // BindJSON 解析请求体，失败时返回统一的 400 错误。
 func BindJSON(c *gin.Context, dst any) error {
-	if err := c.ShouldBindJSON(dst); err != nil {
-		return BadRequest("请求体格式不正确: "+err.Error())
+	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 4*1024*1024+1))
+	if err != nil || len(raw) > 4*1024*1024 {
+		return BadRequest("请求体读取失败或超过 4 MiB")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(dst); err != nil {
+		return BadRequest("请求体格式不正确: " + err.Error())
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return BadRequest("请求只能包含一个 JSON 对象")
+	}
+	if err = binding.Validator.ValidateStruct(dst); err != nil {
+		return BadRequest("请求体格式不正确: " + err.Error())
 	}
 	return nil
 }

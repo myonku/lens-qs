@@ -3,7 +3,6 @@ package server
 
 import (
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,32 +11,23 @@ import (
 	authhttp "github.com/myonku/lens-qs-api/internal/auth/http"
 	"github.com/myonku/lens-qs-api/internal/dictionary"
 	dictionaryhttp "github.com/myonku/lens-qs-api/internal/dictionary/http"
-	"github.com/myonku/lens-qs-api/internal/idempotency"
-	idempotencyhttp "github.com/myonku/lens-qs-api/internal/idempotency/http"
-	"github.com/myonku/lens-qs-api/internal/inspection"
-	inspectionhttp "github.com/myonku/lens-qs-api/internal/inspection/http"
 	"github.com/myonku/lens-qs-api/internal/ledger"
 	"github.com/myonku/lens-qs-api/internal/middleware"
 	"github.com/myonku/lens-qs-api/internal/pkg/config"
 	"github.com/myonku/lens-qs-api/internal/pkg/httpx"
 	"github.com/myonku/lens-qs-api/internal/sample"
 	samplehttp "github.com/myonku/lens-qs-api/internal/sample/http"
-	"github.com/myonku/lens-qs-api/internal/stats"
-	statshttp "github.com/myonku/lens-qs-api/internal/stats/http"
 	"github.com/myonku/lens-qs-api/internal/users"
 )
 
 // Deps 是构建路由所需的依赖。
 type Deps struct {
-	Ledger      *ledger.Service
-	Cfg         *config.Config
-	Auth        *auth.Service
-	UserStore   *users.Store
-	Dict        *dictionary.Store
-	Sample      *sample.Service
-	Inspection  *inspection.Service
-	Stats       *stats.Service
-	Idempotency *idempotency.Store // 为 nil 时关闭幂等
+	Ledger    *ledger.Service
+	Cfg       *config.Config
+	Auth      *auth.Service
+	UserStore *users.Store
+	Dict      *dictionary.Store
+	Sample    *sample.Service
 }
 
 // Build 组装并返回 gin 引擎。
@@ -56,7 +46,7 @@ func Build(d Deps) *gin.Engine {
 	r.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"name":    "lens-qs-api",
-			"version": "0.1.0",
+			"version": "2.0.0",
 			"docs": gin.H{
 				"requirements": "docs/requirements.md",
 				"design":       "docs/design.md",
@@ -66,42 +56,15 @@ func Build(d Deps) *gin.Engine {
 		})
 	})
 
-	api := r.Group("/api")
-
-	// 公开接口
+	api := r.Group("/api/v2")
 	authH := authhttp.New(d.Auth, d.UserStore, d.Cfg.CookieName, d.Cfg.CookieSecure)
 	authH.RegisterPublic(api)
-
-	if d.Ledger != nil {
-		d.Ledger.Register(api.Group("/v2", middleware.Auth(d.Auth, d.Cfg.CookieName), businessWriteGate(d.Cfg.BusinessWriteDomain, "v2")))
-	}
-
-	// 需要登录的接口（认证是唯一硬边界；权限只有"普通用户 / 管理员"两级）
 	authed := api.Group("", middleware.Auth(d.Auth, d.Cfg.CookieName))
-	// 幂等：写接口在 TTL 内用相同幂等键重复提交时回放首次响应，避免弱网重试重复写入
-	authed.Use(businessWriteGate(d.Cfg.BusinessWriteDomain, "legacy"), idempotencyhttp.Middleware(d.Idempotency))
 	authH.RegisterAuthed(authed)
+	if d.Ledger != nil {
+		d.Ledger.Register(authed)
+	}
 	dictionaryhttp.New(d.Dict).Register(authed)
-	inspectionhttp.New(d.Inspection).Register(authed)
-	samplehttp.New(d.Sample, d.Inspection).Register(authed)
-	statshttp.New(d.Stats).Register(authed)
-
+	samplehttp.New(d.Sample).Register(authed)
 	return r
-}
-
-// Gate runs before either idempotency implementation, so cached old successes
-// cannot reopen a read-only domain after cutover. Accounts/dictionaries are shared.
-func businessWriteGate(selected, domain string) gin.HandlerFunc {
-	if selected == "" {
-		selected = "v2"
-	}
-	return func(c *gin.Context) {
-		business := domain == "v2" || strings.HasPrefix(c.Request.URL.Path, "/api/forms")
-		if business && c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead && c.Request.Method != http.MethodOptions && selected != domain {
-			httpx.Fail(c, httpx.Conflict("该业务域已设为只读", gin.H{"reason": "business_domain_read_only", "write_domain": selected}))
-			c.Abort()
-			return
-		}
-		c.Next()
-	}
 }

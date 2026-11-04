@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/lens-qs-createuser ./cmd/createuser \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o /out/lens-qs-rebuild ./cmd/rebuild
+    go build -trimpath -ldflags="-s -w" -o /out/lens-qs-reset-testdata ./cmd/reset-testdata
 
 # ---- 运行阶段 ----
 FROM alpine:3.20
