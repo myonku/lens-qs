@@ -161,7 +161,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (*User, error) {
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
-	_, err = s.db.NamedExecContext(ctx, `INSERT INTO users (`+columns+`) VALUES (
+	_, err = store.NamedExec(ctx, s.db, `INSERT INTO users (`+columns+`) VALUES (
 		:id, :username, :display_name, :employee_no, :unit_id, :password_hash,
 		:is_admin, :must_change_pwd, :status, :failed_attempts, :locked_until, :last_login_at,
 		:created_at, :updated_at)`, u)
@@ -223,7 +223,7 @@ func (s *Store) Update(ctx context.Context, userID string, in UpdateInput) (*Use
 	}
 	u.UpdatedAt = store.FormatTime(time.Now())
 
-	_, err = s.db.NamedExecContext(ctx, `UPDATE users SET
+	_, err = store.NamedExec(ctx, s.db, `UPDATE users SET
 		display_name = :display_name, employee_no = :employee_no, unit_id = :unit_id,
 		password_hash = :password_hash, is_admin = :is_admin, status = :status,
 		failed_attempts = :failed_attempts, locked_until = :locked_until, updated_at = :updated_at
@@ -250,7 +250,7 @@ func (s *Store) UpdateLoginState(ctx context.Context, userID string, failed int,
 func (s *Store) SetPassword(ctx context.Context, userID, hash string, mustChange bool) error {
 	_, err := s.db.ExecContext(ctx, s.rebind(`UPDATE users SET
 		password_hash = ?, must_change_pwd = ?, failed_attempts = 0, locked_until = NULL,
-		updated_at = ? WHERE id = ?`), hash, mustChange, store.FormatTime(time.Now()), userID)
+		updated_at = ? WHERE id = ?`), hash, store.BoolInt(mustChange), store.FormatTime(time.Now()), userID)
 	if err != nil {
 		return fmt.Errorf("更新密码失败: %w", err)
 	}

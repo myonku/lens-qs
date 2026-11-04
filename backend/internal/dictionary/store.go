@@ -99,7 +99,7 @@ func (s *Store) ListItems(ctx context.Context, category string, includeInactive 
 	}
 	if !includeInactive {
 		q += ` AND active = ?`
-		args = append(args, true)
+		args = append(args, 1)
 	}
 	q += ` ORDER BY category, sort_no, code`
 
@@ -132,7 +132,7 @@ func (s *Store) UpsertItem(ctx context.Context, it *Item) (*Item, error) {
 		existing.Active = it.Active
 		existing.Meta = it.Meta
 		existing.UpdatedAt = now
-		if _, err := s.db.NamedExecContext(ctx, `UPDATE dict_items SET
+		if _, err := store.NamedExec(ctx, s.db, `UPDATE dict_items SET
 			label = :label, sort_no = :sort_no, active = :active, meta = :meta, updated_at = :updated_at
 			WHERE id = :id`, &existing); err != nil {
 			return nil, fmt.Errorf("更新字典项失败: %w", err)
@@ -144,7 +144,7 @@ func (s *Store) UpsertItem(ctx context.Context, it *Item) (*Item, error) {
 		}
 		it.CreatedAt = now
 		it.UpdatedAt = now
-		if _, err := s.db.NamedExecContext(ctx, `INSERT INTO dict_items (`+itemColumns+`) VALUES (
+		if _, err := store.NamedExec(ctx, s.db, `INSERT INTO dict_items (`+itemColumns+`) VALUES (
 			:id, :category, :code, :label, :sort_no, :active, :meta, :created_at, :updated_at)`, it); err != nil {
 			return nil, fmt.Errorf("新增字典项失败: %w", err)
 		}
@@ -177,7 +177,7 @@ func (s *Store) UpdateItem(ctx context.Context, itemID string, label *string, so
 		it.Meta = meta
 	}
 	it.UpdatedAt = store.FormatTime(time.Now())
-	if _, err := s.db.NamedExecContext(ctx, `UPDATE dict_items SET
+	if _, err := store.NamedExec(ctx, s.db, `UPDATE dict_items SET
 		label = :label, sort_no = :sort_no, active = :active, meta = :meta, updated_at = :updated_at
 		WHERE id = :id`, &it); err != nil {
 		return nil, fmt.Errorf("更新字典项失败: %w", err)
@@ -224,7 +224,7 @@ func (s *Store) UpsertUnit(ctx context.Context, u *Unit) (*Unit, error) {
 		existing.SortNo = u.SortNo
 		existing.Active = u.Active
 		existing.UpdatedAt = now
-		if _, err := s.db.NamedExecContext(ctx, `UPDATE units SET
+		if _, err := store.NamedExec(ctx, s.db, `UPDATE units SET
 			name = :name, sort_no = :sort_no, active = :active, updated_at = :updated_at
 			WHERE id = :id`, &existing); err != nil {
 			return nil, fmt.Errorf("更新单位失败: %w", err)
@@ -236,7 +236,7 @@ func (s *Store) UpsertUnit(ctx context.Context, u *Unit) (*Unit, error) {
 		}
 		u.CreatedAt = now
 		u.UpdatedAt = now
-		if _, err := s.db.NamedExecContext(ctx, `INSERT INTO units (`+unitColumns+`) VALUES (
+		if _, err := store.NamedExec(ctx, s.db, `INSERT INTO units (`+unitColumns+`) VALUES (
 			:id, :code, :name, :sort_no, :active, :created_at, :updated_at)`, u); err != nil {
 			return nil, fmt.Errorf("新增单位失败: %w", err)
 		}
@@ -344,7 +344,7 @@ func (s *Store) UpsertDrawings(ctx context.Context, list []Drawing) (inserted, u
 			existing.Active = d.Active
 			existing.Note = d.Note
 			existing.UpdatedAt = now
-			if _, err := s.db.NamedExecContext(ctx, `UPDATE sample_drawings SET
+			if _, err := store.NamedExec(ctx, s.db, `UPDATE sample_drawings SET
 				seq_no = :seq_no, project_code = :project_code, model_code = :model_code,
 				spec_code = :spec_code, size_code = :size_code, side_code = :side_code,
 				class_code = :class_code, is_rx = :is_rx, active = :active, note = :note,
@@ -358,7 +358,7 @@ func (s *Store) UpsertDrawings(ctx context.Context, list []Drawing) (inserted, u
 			}
 			d.CreatedAt = now
 			d.UpdatedAt = now
-			if _, err := s.db.NamedExecContext(ctx, `INSERT INTO sample_drawings (`+drawingColumns+`) VALUES (
+			if _, err := store.NamedExec(ctx, s.db, `INSERT INTO sample_drawings (`+drawingColumns+`) VALUES (
 				:id, :seq_no, :drawing_no, :project_code, :model_code, :spec_code, :size_code,
 				:side_code, :class_code, :is_rx, :active, :note, :created_at, :updated_at)`, d); err != nil {
 				return inserted, updated, fmt.Errorf("新增参考部件号失败: %w", err)

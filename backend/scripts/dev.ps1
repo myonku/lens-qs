@@ -81,6 +81,7 @@ if ($LASTEXITCODE -ne 0) { throw "构建失败" }
 go build -o bin/lens-qs-migrate.exe ./cmd/migrate
 go build -o bin/lens-qs-seed.exe ./cmd/seed
 go build -o bin/lens-qs-createuser.exe ./cmd/createuser
+go build -o bin/lens-qs-rebuild.exe ./cmd/rebuild
 
 Write-Host "`n[2/4] 迁移..." -ForegroundColor Green
 & ./bin/lens-qs-migrate.exe
