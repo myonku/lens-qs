@@ -1,7 +1,9 @@
 # ---- 构建阶段 ----
-FROM golang:1.24-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /src
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
 
 # 先复制依赖清单，利用层缓存
 COPY go.mod go.sum ./
@@ -18,7 +20,9 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/lens-qs-seed ./cmd/seed \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o /out/lens-qs-createuser ./cmd/createuser
+    go build -trimpath -ldflags="-s -w" -o /out/lens-qs-createuser ./cmd/createuser \
+ && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/lens-qs-rebuild ./cmd/rebuild
 
 # ---- 运行阶段 ----
 FROM alpine:3.20
@@ -31,7 +35,7 @@ RUN apk add --no-cache ca-certificates tzdata curl \
 WORKDIR /app
 COPY --from=builder /out/ /app/
 # 参考部件号清单（seed 命令使用）
-COPY data/ /app/data/
+COPY data/*.csv /app/data/
 
 ENV APP_ENV=prod \
     APP_ADDR=:8080 \
@@ -44,7 +48,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
 
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh \
+ && chmod +x /app/docker-entrypoint.sh
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["/app/lens-qs-api"]

@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+bin/
+backups/
+data/*.db*
+data/*.sqlite*
+data/backups/
+*.log
+.git/

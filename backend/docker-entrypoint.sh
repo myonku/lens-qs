@@ -21,15 +21,8 @@ if [ "${SEED_ON_START:-true}" = "true" ]; then
   /app/lens-qs-seed -skip-migrate || echo "[entrypoint] 初始化数据跳过（可以稍后手动执行）"
 fi
 
-if [ -n "${BOOTSTRAP_ADMIN_USER}" ] && [ -n "${BOOTSTRAP_ADMIN_PASS}" ]; then
-  echo "[entrypoint] 检查初始管理员 ${BOOTSTRAP_ADMIN_USER}…"
-  /app/lens-qs-createuser -skip-migrate \
-    -username "${BOOTSTRAP_ADMIN_USER}" -password "${BOOTSTRAP_ADMIN_PASS}" \
-    -admin -name "${BOOTSTRAP_ADMIN_NAME:-管理员}" 2>/dev/null \
-    || /app/lens-qs-createuser -skip-migrate -update \
-       -username "${BOOTSTRAP_ADMIN_USER}" -password "${BOOTSTRAP_ADMIN_PASS}" \
-       -admin -name "${BOOTSTRAP_ADMIN_NAME:-管理员}"
-fi
+# API only bootstraps an administrator when users is empty. Never call
+# createuser -update here: that would reset an existing password on every restart.
 
 echo "[entrypoint] 启动服务：$*"
 exec "$@"

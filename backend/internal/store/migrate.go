@@ -113,7 +113,7 @@ func applyMigration(ctx context.Context, db *sqlx.DB, version int, name string, 
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`,
+		db.Rebind(`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`),
 		version, name, nowText()); err != nil {
 		return fmt.Errorf("记录迁移版本失败: %w", err)
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/myonku/lens-qs-api/internal/dictionary"
 	"github.com/myonku/lens-qs-api/internal/idempotency"
 	"github.com/myonku/lens-qs-api/internal/inspection"
+	"github.com/myonku/lens-qs-api/internal/ledger"
 	"github.com/myonku/lens-qs-api/internal/pkg/config"
 	"github.com/myonku/lens-qs-api/internal/pkg/database"
 	"github.com/myonku/lens-qs-api/internal/sample"
@@ -78,6 +79,7 @@ func main() {
 
 	engine := server.Build(server.Deps{
 		Cfg:         cfg,
+		Ledger:      ledger.New(db),
 		Auth:        authSvc,
 		UserStore:   userStore,
 		Dict:        dictStore,

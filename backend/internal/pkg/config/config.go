@@ -12,12 +12,13 @@ import (
 // Config 是应用的全部可配置项。
 type Config struct {
 	// App
-	Env  string // dev | prod
-	Addr string // 监听地址，如 :8080
+	BusinessWriteDomain string // legacy | v2: exactly one writable business domain
+	Env                 string // dev | prod
+	Addr                string // 监听地址，如 :8080
 
 	// DB
-	DBDriver string // sqlite | postgres
-	DBDSN    string // sqlite 文件路径，或 postgres 连接串
+	DBDriver  string // sqlite | postgres
+	DBDSN     string // sqlite 文件路径，或 postgres 连接串
 	DBMaxOpen int
 	DBMaxIdle int
 
@@ -50,12 +51,13 @@ func Load() (*Config, error) {
 	LoadDotEnv(".env", "backend/.env")
 
 	c := &Config{
-		Env:      env("APP_ENV", "dev"),
-		Addr:     env("APP_ADDR", ":8080"),
-		DBDriver: strings.ToLower(env("DB_DRIVER", "sqlite")),
-		DBDSN:    env("DB_DSN", "./data/lens.db"),
-		DBMaxOpen: envInt("DB_MAX_OPEN", 10),
-		DBMaxIdle: envInt("DB_MAX_IDLE", 5),
+		BusinessWriteDomain: env("BUSINESS_WRITE_DOMAIN", "v2"),
+		Env:                 env("APP_ENV", "dev"),
+		Addr:                env("APP_ADDR", ":8080"),
+		DBDriver:            strings.ToLower(env("DB_DRIVER", "sqlite")),
+		DBDSN:               env("DB_DSN", "./data/lens.db"),
+		DBMaxOpen:           envInt("DB_MAX_OPEN", 10),
+		DBMaxIdle:           envInt("DB_MAX_IDLE", 5),
 
 		SessionTTL:     envDuration("SESSION_TTL", 12*time.Hour),
 		SessionIdleTTL: envDuration("SESSION_IDLE_TTL", 2*time.Hour),
@@ -72,6 +74,9 @@ func Load() (*Config, error) {
 		AutoMigrate:        envBool("AUTO_MIGRATE", false),
 	}
 
+	if c.BusinessWriteDomain != "legacy" && c.BusinessWriteDomain != "v2" {
+		return nil, fmt.Errorf("BUSINESS_WRITE_DOMAIN 必须为 legacy 或 v2")
+	}
 	switch c.DBDriver {
 	case "sqlite", "sqlite3":
 		c.DBDriver = "sqlite"
