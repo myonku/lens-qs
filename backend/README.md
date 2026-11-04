@@ -43,4 +43,4 @@ go test -race ./internal/ledger -count=1 # 先设置 LENS_TEST_POSTGRES_DSN 才�
 
 容器：`docker compose up -d --build`。可用 `docker build --build-arg GOPROXY=https://goproxy.cn -t lens-qs:v2 .` 选择构建代理。镜像只带CSV参考资料，不包含本地库/备份/.env，重启不会重设已有管理员密码。
 
-本地脚本 `pwsh -File scripts/dev.ps1 -NoWait`；可选 `-ResetTestData`显式清测试业务并保留账户，旧删库 `-Reset` 已移除。CI覆盖SQLite和PostgreSQL，新版本发布记录见[验收](../docs/v2-release.md)。
+本地脚本 `pwsh -File scripts/dev.ps1 -NoWait`；可选 `-ResetTestData`显式清测试业务并保留账户，旧删库 `-Reset` 已移除。CI覆盖SQLite和PostgreSQL，主分支阶段与验收记录见[全局进度](../docs/progress.md)，调用方变更见[发布说明](../docs/v2-release.md)。

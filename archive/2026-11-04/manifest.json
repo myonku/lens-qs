@@ -1,0 +1,67 @@
+{
+  "snapshot_date": "2026-11-04",
+  "source_commit": "856f7df3aea237fbffa2271e3b706787a1544b6d",
+  "description": "Committed documentation before main-branch consolidation; immutable canonical Git blob bytes. Relative links retain the original repository layout. Historical stage logs are superseded by docs/progress.md.",
+  "files": [
+    {
+      "original_path": "README.md",
+      "archived_path": "archive/2026-11-04/pre-sync/README.md",
+      "sha256": "7433a88bd83756565912ea4caf439d4f51ab451fa4fb6973ebc4092e31e91256",
+      "bytes": 1027
+    },
+    {
+      "original_path": "backend/README.md",
+      "archived_path": "archive/2026-11-04/pre-sync/backend/README.md",
+      "sha256": "c0dd1c88d4dd08934a3ae67cfb0aea2826cc1c612775c338270e4f3803a557d5",
+      "bytes": 2636
+    },
+    {
+      "original_path": "docs/api.md",
+      "archived_path": "archive/2026-11-04/pre-sync/docs/api.md",
+      "sha256": "f3f108da879e64851bf7280880c45ac6719a8869f8037b03ea265538118094a1",
+      "bytes": 30103
+    },
+    {
+      "original_path": "docs/design.md",
+      "archived_path": "archive/2026-11-04/pre-sync/docs/design.md",
+      "sha256": "e1648864e159d737ac4e40b8aa1c67ba2a5a946fccc6b5d0dbbbaedd9110853e",
+      "bytes": 5932
+    },
+    {
+      "original_path": "docs/features.md",
+      "archived_path": "archive/2026-11-04/pre-sync/docs/features.md",
+      "sha256": "ba7e2c8b9932e1339f848a39b9f2afe91b5f00642165b33cc17db599df29f278",
+      "bytes": 1207
+    },
+    {
+      "original_path": "docs/migration.md",
+      "archived_path": "archive/2026-11-04/pre-sync/docs/migration.md",
+      "sha256": "cb602a35e7f5dcac32c854648c6562ba586f1c1bc0704692027e59412f0edc5b",
+      "bytes": 2110
+    },
+    {
+      "original_path": "docs/rebuild-execution.md",
+      "archived_path": "archive/2026-11-04/pre-sync/docs/rebuild-execution.md",
+      "sha256": "d3c90efd4838ef388cb0999f9a3db432dd76c4411a093f8ae84912154c5bbd6b",
+      "bytes": 9898
+    },
+    {
+      "original_path": "docs/rebuild-plan.md",
+      "archived_path": "archive/2026-11-04/pre-sync/docs/rebuild-plan.md",
+      "sha256": "b1337e351f8808a9bf6c2793a2bf19c2af39d126dc4701d37a2d26ad6e9b471d",
+      "bytes": 851
+    },
+    {
+      "original_path": "docs/requirements.md",
+      "archived_path": "archive/2026-11-04/pre-sync/docs/requirements.md",
+      "sha256": "9f19aceade205607e5642b7519136957ae293a87a2e8dd424369a96dc3990fa5",
+      "bytes": 7809
+    },
+    {
+      "original_path": "docs/v2-release.md",
+      "archived_path": "archive/2026-11-04/pre-sync/docs/v2-release.md",
+      "sha256": "f8aa425094ff316f4d3d3496cc43b1b4ca7eba34d8ee021396cd4f2728695615",
+      "bytes": 5368
+    }
+  ]
+}

@@ -12,13 +12,13 @@ submission_revisions 保存完整 TEXT JSON 内容快照，并有正式计数、
 
 ## 2. 账户填报隔离
 
-users.account_type TEXT NOT NULL DEFAULT NORMAL，CHECK NORMAL/SAMPLING。is_admin 是独立的账户管理能力。Principal、登录、me、用户列表/创建/修改均暴露 account_type 和派生 submission_inspection_kind。维护用户类型时同事务撤销 sessions 并删除用户 v2 幂等缓存，密码哈希保持。
+users.account_type TEXT NOT NULL DEFAULT NORMAL，CHECK NORMAL/SAMPLING。is_admin 是独立的账户管理能力。Principal与用户列表/创建/修改结构携带account_type；登录及me额外返回派生的submission_inspection_kind。维护用户类型时同事务撤销 sessions 并删除用户 v2 幂等缓存，密码哈希保持。
 
 ledger 写事务获取数据库写闸门后读取当前 users.status/account_type；幂等指纹还绑定该类型。创建工序组和未归组草稿时缺省采用账户类型，显式相反类型 403。引用已有组/单的所有变更先验证类型（包括绑定、关组/开放），随后执行版本/状态/slot校验。管理员写业务也适用。读取目前不按类型限制，前端负责默认显示/固定填报标记。
 
 ## 3. 事务和并发
 
-v2 写入均强制 X-Idempotency-Key，修改已有对象强制 expected_version。同键同目标/原文/账户类型回放，回放先于旧版本判断。数据库全局 v2_write_lock 闸门在业务读之前串行化写入，SQLite默认temp_store=MEMORY避免Windows临时文件失败（自定义URI也补齐连接配置）；首条 UPDATE 获取写锁，PostgreSQL 同行锁；等待及事务有界。slot、版本、审计与响应结果同事务，任一失败全部回滚，不以存储故障放行业务。
+检验业务写入均强制 X-Idempotency-Key，修改已有对象强制 expected_version。同键同目标/原文/账户类型回放，回放先于旧版本判断。数据库全局 v2_write_lock 闸门在业务读之前串行化写入，SQLite默认temp_store=MEMORY避免Windows临时文件失败（自定义URI也补齐连接配置）；首条 UPDATE 获取写锁，PostgreSQL 同行锁；等待及事务有界。slot、版本、审计与响应结果同事务，任一失败全部回滚，不以存储故障放行业务。
 
 绑定已归组身份不可改；取消释放slot，组模式按剩余占用维护；组已关闭不能新建或绑定，已有正式单仍可修订/取消。批量内部冲突和越权均整体回滚。
 
@@ -42,6 +42,6 @@ GET reports/operations/{operation_id} 要求 from/to，可选 product_lot_id、i
 
 业务日期/时点/系统时间物理列均TEXT，标准日期YYYY-MM-DD，时点UTC秒精度；原始纸面文字独立。日期与时点二选一，切换精度PATCH需清空旧字段。非法日期、无时区/小数秒时点拒绝。
 
-0006 新增账户类型并删除旧业务表、旧幂等及迁移候选表，旧表清理不可逆；down迁移不能假装恢复被删除业务证据。保留0001–0005迁移文件仅供升级链，运行代码不再查询旧表。已有v2业务不由0006自动清空；本次本地测试记录通过显式reset-testdata命令清理。命令保留users/字典，清业务审计/幂等/会话/解析缓存并设置报告历史起点，防止清空后回放已删除数据。
+0006 新增账户类型并删除旧业务表、旧幂等及迁移候选表，旧表清理不可逆；down迁移不能假装恢复被删除业务证据。保留0001–0005迁移文件仅供升级链，运行代码不再查询旧表。已有v2业务不由0006自动清空；测试业务通过显式reset-testdata命令清理。命令保留users/字典，清业务审计/幂等/会话/解析缓存并设置报告历史起点，防止清空后回放已删除数据。
 
-真实环境部署先停旧调用方写入、备份并确认测试数据范围，再迁移并更换全部调用方路径。历史施工记录只描述当时结果，当前状态以本文件及发布记录为准。
+真实环境部署先停旧调用方写入、备份并确认测试数据范围，再迁移并更换全部调用方路径。历史施工记录只描述当时结果，当前设计以本文件为准，阶段状态统一见[项目进度](progress.md)。

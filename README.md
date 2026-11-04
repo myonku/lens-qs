@@ -1,15 +1,21 @@
 # lens-qs — 无纸化检验台账 v2
 
-Go 后端，SQLite/PostgreSQL 双库。按产品批→工序/检验类型填报组→检验单→不可覆盖版本组织资料，支持普通/抽检账户权限隔离、独立填报、修订、正式统计、历史时点及工序时间范围报告。
+当前主分支版本 **2.0.0**，数据库迁移至 **0006**。`codex/v2-rebuild` 和 `codex/v2-release` 已合入 `main`。全局进度、阶段结论和验收范围统一记录于[项目进度](docs/progress.md)。
 
-所有认证、账户、字典、解析、业务及报告接口统一 `/api/v2`；旧 `/api` 契约与业务实现已移除。`GET /healthz` 独立提供健康检查。普通账户只能提交 NORMAL，抽检账户只能提交 SAMPLING，管理员也受填报类型限制。
+Go 后端，SQLite/PostgreSQL 双库。按产品批→工序与检验类型填报组→检验单→不可覆盖版本组织资料。普通/抽检账户按 NORMAL/SAMPLING 隔离填报，管理员同样受填报类型约束；支持独立填报、正式修订、统计、历史时点报告及工序时间范围报告。
 
-- [需求](docs/requirements.md)
-- [设计](docs/design.md)
-- [正式 API](docs/api.md)
-- [迁移与旧数据清理](docs/migration.md)
-- [功能状态](docs/features.md)
-- [本次发布与验收](docs/v2-release.md)
-- [后端启动](backend/README.md)
+认证、账户、字典、解析、业务和报告接口统一 `/api/v2`，健康检查为 `/healthz`。前端根据登录/me返回的账户类型固定填报标记。日期继续 TEXT，业务时区 Asia/Shanghai；未知计数不补零，不由工序差额推导库存或损耗。
 
-历史文件保留在 archive 和历史施工记录中，仅用于追溯，不代表当前接口。日期继续 TEXT，业务时区 Asia/Shanghai；未填计数不补零，不自动推导库存/损耗。
+| 文档 | 用途 |
+|---|---|
+| [项目进度](docs/progress.md) | 全局状态、阶段结果、合并记录、验收证据与外部交付边界 |
+| [需求](docs/requirements.md) | 当前业务规则与AC-01–AC-20验收基线 |
+| [设计](docs/design.md) | 当前模型、权限、事务、版本、报告与日期口径 |
+| [API契约](docs/api.md) | 前端对接、字段、错误与查询参数 |
+| [运行说明](backend/README.md) | 本地运行、容器、维护命令及测试 |
+| [迁移说明](docs/migration.md) | 升级、备份、测试数据清理与恢复边界 |
+| [功能状态](docs/features.md) | 能力清单与范围限制 |
+| [发布说明](docs/v2-release.md) | 2.0.0对调用方的变更 |
+| [归档索引](archive/README.md) | 历史设计、阶段明细和同步前快照，均非当前契约 |
+
+本仓库交付后端。前端工程与生产部署的完成情况不由主分支合并推定；当前已核验的范围见全局进度。

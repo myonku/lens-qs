@@ -2,7 +2,7 @@
 
 版本：2.0.0。日期：2026-11-04。正式 v2 契约；旧 `/api/*` 路径已移除，无兼容别名。
 
-依据：[需求](requirements.md)、[设计](design.md)。运行证据见[发布记录](v2-release.md)。归档仅供历史追溯，不用于前端对接。
+依据：[需求](requirements.md)、[设计](design.md)。阶段与验收证据统一见[项目进度](progress.md)。归档仅供历史追溯，不用于前端对接。
 
 ## 1. 通用约定
 
@@ -20,7 +20,7 @@ account_type 决定填报 inspection_kind，is_admin 不提供越类型业务权
 
 成功：`{"code":"ok","message":"","data":{...}}`。新建 201，查询/修改/动作 200。失败：`{"code":"conflict","message":"...","details":{...}}`。
 
-列表统一 `page=1&page_size=20`，page_size 范围 1–100；响应 data 为 `{items,total,page,page_size}`，空列表 items 为 `[]`。稳定排序以业务排序字段加 ID；所有未列明查询参数、未知请求字段报 400。
+检验业务与用户分页列表采用 `page=1&page_size=20`，page_size 范围1–100，响应data为 `{items,total,page,page_size}`，空items为 `[]`；字典和目录接口按各自结构返回，不统一承诺分页。检验业务查询对未列明或重复参数返回400，未知请求字段返回400；共享管理接口的查询参数按各端点约定。
 
 | HTTP | code | 场景 |
 |---|---|---|

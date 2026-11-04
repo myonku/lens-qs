@@ -36,3 +36,4 @@ Makefile    text eol=lf
 docs/api/*.md linguist-documentation
 # 归档按 manifest 保留原始字节，不应用工作文档的换行转换。
 archive/2026-11-03/legacy/** -text -diff
+archive/2026-11-04/pre-sync/** -text -diff
