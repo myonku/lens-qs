@@ -16,8 +16,16 @@ type AppliedMigration struct {
 
 // AppliedMigrations 返回已应用的迁移列表（按版本升序）。
 func AppliedMigrations(ctx context.Context, db *sqlx.DB) ([]AppliedMigration, error) {
-	if err := ensureMigrationTable(ctx, db); err != nil {
+	var exists int
+	q := `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'`
+	if db.DriverName() == "pgx" {
+		q = `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='schema_migrations'`
+	}
+	if err := db.GetContext(ctx, &exists, q); err != nil {
 		return nil, err
+	}
+	if exists == 0 {
+		return []AppliedMigration{}, nil
 	}
 	var out []AppliedMigration
 	if err := db.SelectContext(ctx, &out,

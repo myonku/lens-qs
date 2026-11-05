@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-
 	"github.com/myonku/lens-qs-api/internal/auth"
 	"github.com/myonku/lens-qs-api/internal/middleware"
 	"github.com/myonku/lens-qs-api/internal/pkg/httpx"
@@ -67,7 +66,7 @@ func (h *Handler) login(c *gin.Context) {
 		"expires_at":   res.ExpiresAt,
 		"user":         res.User,
 		"account_type": res.User.AccountType, "submission_inspection_kind": res.User.AccountType,
-		"note": "浏览器可用 Cookie；其它调用方可使用 Authorization: Bearer <token>",
+		"is_admin": res.User.IsAdmin,
 	})
 }
 
@@ -114,7 +113,15 @@ func (h *Handler) changePassword(c *gin.Context) {
 }
 
 func (h *Handler) listUsers(c *gin.Context) {
-	page, size := pageParams(c)
+	if err := httpx.Query(c, "keyword", "page", "page_size"); err != nil {
+		httpx.Fail(c, err)
+		return
+	}
+	page, size, err := httpx.Pagination(c)
+	if err != nil {
+		httpx.Fail(c, err)
+		return
+	}
 	list, total, err := h.users.List(c.Request.Context(), c.Query("keyword"), (page-1)*size, size)
 	if err != nil {
 		httpx.Fail(c, err)
@@ -124,13 +131,13 @@ func (h *Handler) listUsers(c *gin.Context) {
 }
 
 type createUserReq struct {
-	AccountType *string `json:"account_type"`
-	Username    string  `json:"username" binding:"required"`
-	Password    string  `json:"password" binding:"required"`
-	DisplayName string  `json:"display_name"`
-	EmployeeNo  string  `json:"employee_no"`
-	UnitID      string  `json:"unit_id"`
-	IsAdmin     bool    `json:"is_admin"`
+	AccountType httpx.Optional[string] `json:"account_type"`
+	Username    string                 `json:"username" binding:"required"`
+	Password    string                 `json:"password" binding:"required"`
+	DisplayName string                 `json:"display_name"`
+	EmployeeNo  string                 `json:"employee_no"`
+	Department  string                 `json:"department"`
+	IsAdmin     bool                   `json:"is_admin"`
 }
 
 func (h *Handler) createUser(c *gin.Context) {
@@ -140,10 +147,14 @@ func (h *Handler) createUser(c *gin.Context) {
 		return
 	}
 	accountType := "NORMAL"
-	if req.AccountType != nil {
-		accountType = *req.AccountType
+	if req.AccountType.Set {
+		if req.AccountType.Value == nil {
+			httpx.Fail(c, httpx.BadRequest("account_type cannot be null"))
+			return
+		}
+		accountType = *req.AccountType.Value
 		if accountType != "NORMAL" && accountType != "SAMPLING" {
-			httpx.Fail(c, httpx.BadRequest("非法 account_type"))
+			httpx.Fail(c, httpx.Validation("非法 account_type", nil))
 			return
 		}
 	}
@@ -153,7 +164,7 @@ func (h *Handler) createUser(c *gin.Context) {
 		Password:      req.Password,
 		DisplayName:   req.DisplayName,
 		EmployeeNo:    optString(req.EmployeeNo),
-		UnitID:        optString(req.UnitID),
+		Department:    optString(req.Department),
 		IsAdmin:       req.IsAdmin,
 		MustChangePwd: false,
 	})
@@ -165,13 +176,13 @@ func (h *Handler) createUser(c *gin.Context) {
 }
 
 type updateUserReq struct {
-	AccountType *string `json:"account_type"`
-	DisplayName *string `json:"display_name"`
-	EmployeeNo  *string `json:"employee_no"`
-	UnitID      *string `json:"unit_id"`
-	IsAdmin     *bool   `json:"is_admin"`
-	Status      *string `json:"status"`
-	Password    *string `json:"password"`
+	AccountType httpx.Optional[string] `json:"account_type"`
+	DisplayName httpx.Optional[string] `json:"display_name"`
+	EmployeeNo  httpx.Optional[string] `json:"employee_no"`
+	Department  httpx.Optional[string] `json:"department"`
+	IsAdmin     httpx.Optional[bool]   `json:"is_admin"`
+	Status      httpx.Optional[string] `json:"status"`
+	Password    httpx.Optional[string] `json:"password"`
 }
 
 func (h *Handler) updateUser(c *gin.Context) {
@@ -180,30 +191,24 @@ func (h *Handler) updateUser(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
+	if !req.AccountType.Set && !req.DisplayName.Set && !req.EmployeeNo.Set && !req.Department.Set && !req.IsAdmin.Set && !req.Status.Set && !req.Password.Set || req.AccountType.Set && req.AccountType.Value == nil || req.DisplayName.Set && req.DisplayName.Value == nil || req.IsAdmin.Set && req.IsAdmin.Value == nil || req.Status.Set && req.Status.Value == nil || req.Password.Set && req.Password.Value == nil {
+		httpx.Fail(c, httpx.BadRequest("empty patch or invalid null"))
+		return
+	}
 	targetID := c.Param("id")
-	if req.IsAdmin != nil && !*req.IsAdmin && targetID == middleware.CurrentUserID(c) {
-		httpx.Fail(c, httpx.BadRequest("不能取消自己的管理员权限"))
-		return
-	}
-	if req.Status != nil && strings.EqualFold(*req.Status, "disabled") && targetID == middleware.CurrentUserID(c) {
-		httpx.Fail(c, httpx.BadRequest("不能停用自己的账号"))
-		return
-	}
-	u, err := h.users.Update(c.Request.Context(), targetID, users.UpdateInput{AccountType: req.AccountType,
-		DisplayName: req.DisplayName,
+	u, err := h.users.Update(c.Request.Context(), targetID, users.UpdateInput{AccountType: req.AccountType.Value,
+		DisplayName: req.DisplayName.Value,
 		EmployeeNo:  req.EmployeeNo,
-		UnitID:      req.UnitID,
-		IsAdmin:     req.IsAdmin,
-		Status:      req.Status,
-		Password:    req.Password,
+		Department:  req.Department,
+		IsAdmin:     req.IsAdmin.Value,
+		Status:      req.Status.Value,
+		Password:    req.Password.Value,
 	})
 	if err != nil {
 		httpx.Fail(c, err)
 		return
 	}
-	if (req.Status != nil && strings.EqualFold(*req.Status, "disabled")) || req.Password != nil {
-		_ = h.svc.RevokeAll(c.Request.Context(), u.ID)
-	}
+
 	httpx.OK(c, u)
 }
 

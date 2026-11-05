@@ -15,10 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jmoiron/sqlx"
-
 	_ "github.com/jackc/pgx/v5/stdlib" // postgres 驱动
-	_ "modernc.org/sqlite"             // sqlite 驱动（纯 Go）
+	"github.com/jmoiron/sqlx"
+	_ "modernc.org/sqlite" // sqlite 驱动（纯 Go）
 )
 
 // Open 打开数据库并验证连通性。
@@ -43,7 +42,11 @@ func openSQLite(path string, maxOpen, maxIdle int) (*sqlx.DB, error) {
 	// Keep every connection safe even when a custom URI already has options.
 	// In-memory temporary storage also avoids Windows VFS temp-file failures
 	// during legacy-table/index cleanup. Explicit temp_store settings are respected.
-	for _, pragma := range []string{"busy_timeout(5000)", "journal_mode(WAL)", "foreign_keys(1)", "temp_store(MEMORY)"} {
+	pragmas := []string{}
+	if !strings.Contains(dsn, "mode=ro") {
+		pragmas = []string{"busy_timeout(5000)", "journal_mode(WAL)", "foreign_keys(1)", "temp_store(MEMORY)"}
+	}
+	for _, pragma := range pragmas {
 		name := pragma[:strings.IndexByte(pragma, '(')]
 		if !strings.Contains(strings.ToLower(dsn), name+"(") && !strings.Contains(strings.ToLower(dsn), name+"%28") {
 			dsn += separator + "_pragma=" + pragma
@@ -86,7 +89,7 @@ func ping(db *sqlx.DB) error {
 	select {
 	case err := <-done:
 		if err != nil {
-			return fmt.Errorf("数据库连接不可用: %w", err)
+			return fmt.Errorf("数据库连接不可用")
 		}
 		return nil
 	case <-time.After(10 * time.Second):

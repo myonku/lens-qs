@@ -29,13 +29,6 @@ type Config struct {
 	CookieName     string
 	CookieSecure   bool
 	CORSOrigins    []string
-
-	// Bootstrap
-	BootstrapAdminUser string
-	BootstrapAdminPass string
-
-	// 是否自动执行数据库迁移（容器首次启动方便）
-	AutoMigrate bool
 }
 
 // Load 读取环境变量并返回配置。缺失项使用默认值。
@@ -61,10 +54,6 @@ func Load() (*Config, error) {
 		CookieName:     env("COOKIE_NAME", "sid"),
 		CookieSecure:   envBool("COOKIE_SECURE", false),
 		CORSOrigins:    envList("CORS_ORIGINS", nil),
-
-		BootstrapAdminUser: env("BOOTSTRAP_ADMIN_USER", ""),
-		BootstrapAdminPass: env("BOOTSTRAP_ADMIN_PASS", ""),
-		AutoMigrate:        envBool("AUTO_MIGRATE", false),
 	}
 
 	switch c.DBDriver {
@@ -74,6 +63,14 @@ func Load() (*Config, error) {
 		c.DBDriver = "postgres"
 	default:
 		return nil, fmt.Errorf("不支持的 DB_DRIVER: %q（可选 sqlite | postgres）", c.DBDriver)
+	}
+	if c.DBMaxOpen < 1 || c.DBMaxIdle < 0 || c.DBMaxIdle > c.DBMaxOpen || c.SessionTTL <= 0 || c.SessionIdleTTL <= 0 || c.SessionIdleTTL > c.SessionTTL || c.MaxLoginFail < 1 || c.LockDuration <= 0 {
+		return nil, fmt.Errorf("配置数值超出有效范围")
+	}
+	for _, origin := range c.CORSOrigins {
+		if origin == "*" {
+			return nil, fmt.Errorf("凭据来源不能使用通配符")
+		}
 	}
 	return c, nil
 }

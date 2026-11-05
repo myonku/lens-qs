@@ -50,10 +50,10 @@ var (
 // 已知取值的规范写法（参考 docs/requirements.md §4.2.3 的清单）。
 // 字典中存在同名 code 时以字典为准，这里只是内置兜底，保证早期可用。
 var (
-	specCanon  = map[string]string{"1": "S1", "2": "S2"}
-	sizeCanon  = map[string]string{"md": "MD", "sm": "SM", "lg": "LG"}
-	sideCanon  = map[string]string{"l": "L", "r": "R"}
-	modelCanon = map[string]string{"1": "VID1", "2": "VID2"}
+	specCanon    = map[string]string{"1": "S1", "2": "S2"}
+	sizeCanon    = map[string]string{"md": "MD", "sm": "SM", "lg": "LG"}
+	sideCanon    = map[string]string{"l": "L", "r": "R"}
+	modelCanon   = map[string]string{"1": "VID1", "2": "VID2"}
 	projectCanon = map[string]string{"1": "M1", "2": "M2"}
 )
 

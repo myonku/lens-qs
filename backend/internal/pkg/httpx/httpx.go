@@ -9,14 +9,14 @@
 package httpx
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"github.com/gin-gonic/gin/binding"
 	"io"
+	"mime"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 )
 
 // 错误码（同时作为响应的 code 字段）。
@@ -184,18 +184,16 @@ func Fail(c *gin.Context, err error) {
 
 // BindJSON 解析请求体，失败时返回统一的 400 错误。
 func BindJSON(c *gin.Context, dst any) error {
+	contentType, _, e := mime.ParseMediaType(c.GetHeader("Content-Type"))
+	if e != nil || contentType != "application/json" {
+		return BadRequest("Content-Type 必须为 application/json")
+	}
 	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 4*1024*1024+1))
 	if err != nil || len(raw) > 4*1024*1024 {
 		return BadRequest("请求体读取失败或超过 4 MiB")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err = decoder.Decode(dst); err != nil {
-		return BadRequest("请求体格式不正确: " + err.Error())
-	}
-	var extra any
-	if decoder.Decode(&extra) != io.EOF {
-		return BadRequest("请求只能包含一个 JSON 对象")
+	if err = DecodeStrict(raw, dst); err != nil {
+		return err
 	}
 	if err = binding.Validator.ValidateStruct(dst); err != nil {
 		return BadRequest("请求体格式不正确: " + err.Error())

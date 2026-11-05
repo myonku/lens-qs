@@ -1,32 +1,49 @@
-// Command reset-testdata clears inspection test data without resetting accounts or dictionaries.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
-	"github.com/myonku/lens-qs-api/internal/ledger"
+	"fmt"
+	"log"
+
 	"github.com/myonku/lens-qs-api/internal/pkg/config"
 	"github.com/myonku/lens-qs-api/internal/pkg/database"
-	"log"
+	"github.com/myonku/lens-qs-api/internal/store"
 )
 
 func main() {
-	confirm := flag.Bool("confirm-test-data", false, "确认目标库业务资料均为可清除测试数据（保留账户与字典）")
+	confirm := flag.Bool("confirm-test-data", false, "clear inspection test data after backup and stopped writes")
+	target := flag.String("target-fingerprint", "", "must match preview")
 	flag.Parse()
-	if !*confirm {
-		log.Fatal("必须显式传入 -confirm-test-data；请先备份并停写")
-	}
 	cfg, e := config.Load()
 	if e != nil {
 		log.Fatal(e)
 	}
-	db, e := database.Open(cfg.DBDriver, cfg.DBDSN, 1, 1)
+	dsn := cfg.DBDSN
+	if !*confirm && cfg.DBDriver == "sqlite" {
+		dsn = store.ReadOnlySQLiteDSN(dsn)
+	}
+	db, e := database.Open(cfg.DBDriver, dsn, 1, 1)
+	if e != nil {
+		log.Fatal("无法打开维护目标")
+	}
+	defer db.Close()
+	ctx := context.Background()
+	inv, e := store.Inspect(ctx, db, cfg.DBDriver)
 	if e != nil {
 		log.Fatal(e)
 	}
-	defer db.Close()
-	if e = ledger.New(db).ResetTestData(context.Background()); e != nil {
+	if !*confirm {
+		b, _ := json.MarshalIndent(inv, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	if *target == "" || *target != inv.Fingerprint || inv.Version != 7 {
+		log.Fatal("目标指纹或结构不符")
+	}
+	if e = store.ResetInspection(ctx, db); e != nil {
 		log.Fatal(e)
 	}
-	log.Print("v2 测试业务、会话、幂等与解析缓存已清除；账户密码及字典保留")
+	fmt.Println("inspection data, sessions, domain idempotency and automatic cache cleared; accounts/configuration/manual confirmations retained")
 }

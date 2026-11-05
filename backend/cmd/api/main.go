@@ -11,14 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/myonku/lens-qs-api/internal/auth"
 	"github.com/myonku/lens-qs-api/internal/dictionary"
-	"github.com/myonku/lens-qs-api/internal/ledger"
 	"github.com/myonku/lens-qs-api/internal/pkg/config"
 	"github.com/myonku/lens-qs-api/internal/pkg/database"
-	"github.com/myonku/lens-qs-api/internal/sample"
 	"github.com/myonku/lens-qs-api/internal/server"
 	"github.com/myonku/lens-qs-api/internal/store"
 	"github.com/myonku/lens-qs-api/internal/users"
@@ -37,14 +33,8 @@ func main() {
 	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
-	if cfg.AutoMigrate {
-		applied, err := store.Migrate(ctx, db, cfg.DBDriver)
-		if err != nil {
-			log.Fatalf("[fatal] 自动迁移失败: %v", err)
-		}
-		if len(applied) > 0 {
-			log.Printf("[info] 已应用迁移: %v", applied)
-		}
+	if err := store.CheckReady(ctx, db, cfg.DBDriver); err != nil {
+		log.Fatal("数据库结构不兼容，请先执行显式维护命令: ", err)
 	}
 
 	// 依赖装配
@@ -57,26 +47,21 @@ func main() {
 	}, cfg.DBDriver)
 
 	dictStore := dictionary.NewStore(db, cfg.DBDriver)
-	sampleSvc := sample.NewService(db, dictStore, cfg.DBDriver)
-
-	// 首次启动时按环境变量创建管理员（数据库为空时才创建）
-	if err := bootstrapAdmin(ctx, userStore, cfg); err != nil {
-		log.Printf("[warn] 初始化管理员失败: %v", err)
-	}
 
 	engine := server.Build(server.Deps{
 		Cfg:       cfg,
-		Ledger:    ledger.New(db),
 		Auth:      authSvc,
 		UserStore: userStore,
 		Dict:      dictStore,
-		Sample:    sampleSvc,
 	})
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           engine,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
@@ -99,31 +84,3 @@ func main() {
 	}
 	log.Println("[info] 已退出")
 }
-
-func bootstrapAdmin(ctx context.Context, userStore *users.Store, cfg *config.Config) error {
-	if cfg.BootstrapAdminUser == "" || cfg.BootstrapAdminPass == "" {
-		return nil
-	}
-	n, err := userStore.Count(ctx)
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil
-	}
-	u, err := userStore.Create(ctx, users.CreateInput{
-		Username:      cfg.BootstrapAdminUser,
-		Password:      cfg.BootstrapAdminPass,
-		DisplayName:   cfg.BootstrapAdminUser,
-		IsAdmin:       true,
-		MustChangePwd: false,
-	})
-	if err != nil {
-		return err
-	}
-	log.Printf("[info] 已创建初始管理员: %s (id=%s)", u.Username, u.ID)
-	return nil
-}
-
-// 保证 gin 引用（server 包已使用；此处保留便于将来在此处设置模式）。
-var _ = gin.Version

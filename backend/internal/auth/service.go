@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
-
 	"github.com/myonku/lens-qs-api/internal/middleware"
 	"github.com/myonku/lens-qs-api/internal/pkg/httpx"
 	"github.com/myonku/lens-qs-api/internal/pkg/id"
@@ -68,53 +67,61 @@ func (s *Service) Login(ctx context.Context, username, plainPassword, ip, userAg
 	if username == "" || plainPassword == "" {
 		return nil, httpx.BadRequest("请输入登录名与密码")
 	}
-
-	u, err := s.users.GetByUsername(ctx, username)
-	if err != nil {
-		return nil, err
+	w, e := store.BeginWrite(ctx, s.db, "", false, nil)
+	if e != nil {
+		return nil, e
 	}
-	// 用户不存在与密码错误返回同一提示，避免账号枚举
-	if u == nil {
+	defer w.Close()
+	var u users.User
+	e = w.GetContext(w.Context, &u, w.Rebind(`SELECT id,username,display_name,employee_no,department,password_hash,is_admin,account_type,must_change_pwd,status,failed_attempts,locked_until,last_login_at,created_at,updated_at FROM users WHERE username=?`), username)
+	if e != nil && e != sql.ErrNoRows {
+		return nil, e
+	}
+	valid := e == nil && u.Status == "active" && (u.LockedUntil == nil || !store.ParseTime(*u.LockedUntil).After(time.Now()))
+	if valid {
+		valid = password.Verify(plainPassword, u.PasswordHash) == nil
+	}
+	if !valid {
+		if u.ID != "" {
+			w.Actor = store.Actor{ID: u.ID, Name: u.DisplayName}
+			failed := u.FailedAttempts + 1
+			var locked *string
+			if u.LockedUntil != nil && store.ParseTime(*u.LockedUntil).After(time.Now()) {
+				locked = u.LockedUntil
+				failed = u.FailedAttempts
+			} else if s.cfg.MaxLoginFail > 0 && failed >= s.cfg.MaxLoginFail {
+				v := store.FormatTime(time.Now().Add(s.cfg.LockDuration))
+				locked = &v
+				failed = 0
+			}
+			if _, e = w.ExecContext(w.Context, w.Rebind(`UPDATE users SET failed_attempts=?,locked_until=? WHERE id=?`), failed, locked, u.ID); e != nil {
+				return nil, e
+			}
+		}
+		if e = w.Event("login_failed", "auth", u.ID, nil, nil, nil); e != nil {
+			return nil, e
+		}
+		if e = w.Commit(); e != nil {
+			return nil, e
+		}
 		return nil, httpx.Unauthorized("登录名或密码不正确")
 	}
-	if u.Status != "active" {
-		return nil, httpx.Forbidden("账号已停用，请联系管理员")
+	w.Actor = store.Actor{ID: u.ID, Name: u.DisplayName}
+	token := id.Token(32)
+	expires := store.FormatTime(time.Now().Add(s.cfg.SessionTTL))
+	if _, e = w.ExecContext(w.Context, w.Rebind(`INSERT INTO sessions(id,user_id,token_hash,ip,user_agent,created_at,last_seen_at,expires_at) VALUES(?,?,?,?,?,?,?,?)`), id.New(), u.ID, tokenHash(token), ip, userAgent, w.Time, w.Time, expires); e != nil {
+		return nil, e
 	}
-	if u.LockedUntil != nil && *u.LockedUntil != "" && store.ParseTime(*u.LockedUntil).After(time.Now()) {
-		return nil, httpx.Forbidden("账号因多次登录失败被暂时锁定，请稍后再试")
+	if _, e = w.ExecContext(w.Context, w.Rebind(`UPDATE users SET failed_attempts=0,locked_until=NULL,last_login_at=? WHERE id=?`), w.Time, u.ID); e != nil {
+		return nil, e
 	}
-
-	if err := password.Verify(plainPassword, u.PasswordHash); err != nil {
-		if !errors.Is(err, password.ErrMismatch) {
-			return nil, httpx.Unauthorized("登录名或密码不正确")
-		}
-		failed := u.FailedAttempts + 1
-		var lockedUntil *string
-		if s.cfg.MaxLoginFail > 0 && failed >= s.cfg.MaxLoginFail {
-			t := store.FormatTime(time.Now().Add(s.cfg.LockDuration))
-			lockedUntil = &t
-			failed = 0
-		}
-		if err := s.users.UpdateLoginState(ctx, u.ID, failed, lockedUntil, nil); err != nil {
-			return nil, err
-		}
-		if lockedUntil != nil {
-			return nil, httpx.Forbidden("连续登录失败次数过多，账号已被暂时锁定")
-		}
-		return nil, httpx.Unauthorized("登录名或密码不正确")
+	if e = w.Event("login", "auth", u.ID, nil, nil, nil); e != nil {
+		return nil, e
 	}
-
-	now := time.Now()
-	rawToken := id.Token(32)
-	expiresAt := store.FormatTime(now.Add(s.cfg.SessionTTL))
-	if err := s.insertSession(ctx, u.ID, tokenHash(rawToken), ip, userAgent, expiresAt); err != nil {
-		return nil, err
+	if e = w.Commit(); e != nil {
+		return nil, e
 	}
-	lastLogin := store.FormatTime(now)
-	if err := s.users.UpdateLoginState(ctx, u.ID, 0, nil, &lastLogin); err != nil {
-		return nil, err
-	}
-	return &LoginResult{Token: rawToken, ExpiresAt: expiresAt, User: u}, nil
+	return &LoginResult{token, expires, &u}, nil
 }
 
 // Authenticate 校验令牌并返回调用者身份；同时推进会话的活跃时间。
@@ -123,7 +130,8 @@ func (s *Service) Authenticate(token string) (*middleware.Principal, error) {
 	if token == "" {
 		return nil, httpx.Unauthorized("")
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
 	var sess Session
 	err := s.db.GetContext(ctx, &sess,
@@ -169,50 +177,63 @@ func (s *Service) Authenticate(token string) (*middleware.Principal, error) {
 
 // Logout 注销指定令牌对应的会话。
 func (s *Service) Logout(ctx context.Context, token string) error {
-	if strings.TrimSpace(token) == "" {
-		return nil
+	w, e := store.BeginWrite(ctx, s.db, "", false, nil)
+	if e != nil {
+		return e
 	}
-	_, err := s.db.ExecContext(ctx, s.rebind(`UPDATE sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`),
-		store.FormatTime(time.Now()), tokenHash(token))
-	if err != nil {
-		return fmt.Errorf("注销会话失败: %w", err)
+	defer w.Close()
+	if _, e = w.ExecContext(w.Context, w.Rebind(`UPDATE sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL`), w.Time, tokenHash(token)); e != nil {
+		return e
 	}
-	return nil
+	if e = w.Event("logout", "auth", w.Actor.ID, nil, nil, nil); e != nil {
+		return e
+	}
+	return w.Commit()
 }
-
-// RevokeAll 注销某用户的全部会话（管理员停用账号或用户改密后调用）。
 func (s *Service) RevokeAll(ctx context.Context, userID string) error {
-	_, err := s.db.ExecContext(ctx, s.rebind(`UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`),
-		store.FormatTime(time.Now()), userID)
-	if err != nil {
-		return fmt.Errorf("注销会话失败: %w", err)
+	w, e := store.BeginWrite(ctx, s.db, "", false, nil)
+	if e != nil {
+		return e
 	}
-	return nil
+	defer w.Close()
+	if _, e = w.ExecContext(w.Context, w.Rebind(`UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL`), w.Time, userID); e != nil {
+		return e
+	}
+	if e = w.Event("sessions_revoked", "auth", userID, nil, nil, nil); e != nil {
+		return e
+	}
+	return w.Commit()
 }
-
-// ChangePassword 修改自己的密码（需要提供原密码）。
 func (s *Service) ChangePassword(ctx context.Context, userID, oldPassword, newPassword string) error {
-	if len(strings.TrimSpace(newPassword)) < 6 {
-		return httpx.BadRequest("新密码长度至少 6 位")
+	if e := password.Validate(newPassword); e != nil {
+		return e
 	}
-	u, err := s.users.GetByID(ctx, userID)
-	if err != nil {
-		return err
+	w, e := store.BeginWrite(ctx, s.db, userID, false, nil)
+	if e != nil {
+		return e
 	}
-	if u == nil {
-		return httpx.NotFound("用户不存在")
+	defer w.Close()
+	var hash string
+	if e = w.GetContext(w.Context, &hash, w.Rebind(`SELECT password_hash FROM users WHERE id=?`), userID); e != nil {
+		return e
 	}
-	if err := password.Verify(oldPassword, u.PasswordHash); err != nil {
-		return httpx.BadRequest("原密码不正确")
+	if password.Verify(oldPassword, hash) != nil {
+		return httpx.Unauthorized("原密码不正确")
 	}
-	hash, err := password.Hash(newPassword)
-	if err != nil {
-		return httpx.BadRequest(err.Error())
+	hash, e = password.Hash(newPassword)
+	if e != nil {
+		return e
 	}
-	if err := s.users.SetPassword(ctx, userID, hash, false); err != nil {
-		return err
+	if _, e = w.ExecContext(w.Context, w.Rebind(`UPDATE users SET password_hash=?,must_change_pwd=0,failed_attempts=0,locked_until=NULL,updated_at=? WHERE id=?`), hash, w.Time, userID); e != nil {
+		return e
 	}
-	return s.RevokeAll(ctx, userID)
+	if _, e = w.ExecContext(w.Context, w.Rebind(`UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL`), w.Time, userID); e != nil {
+		return e
+	}
+	if e = w.Event("password_changed", "user", userID, nil, nil, nil); e != nil {
+		return e
+	}
+	return w.Commit()
 }
 
 // CleanupExpired 清理已过期会话（可由定时任务调用）。
@@ -224,30 +245,6 @@ func (s *Service) CleanupExpired(ctx context.Context) (int64, error) {
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
-}
-
-func (s *Service) insertSession(ctx context.Context, userID, hash, ip, userAgent, expiresAt string) error {
-	sess := &Session{
-		ID:         id.New(),
-		UserID:     userID,
-		TokenHash:  hash,
-		CreatedAt:  store.FormatTime(time.Now()),
-		LastSeenAt: store.FormatTime(time.Now()),
-		ExpiresAt:  expiresAt,
-	}
-	if strings.TrimSpace(ip) != "" {
-		sess.IP = &ip
-	}
-	if strings.TrimSpace(userAgent) != "" {
-		sess.UserAgent = &userAgent
-	}
-	_, err := s.db.NamedExecContext(ctx, `INSERT INTO sessions
-		(id, user_id, token_hash, ip, user_agent, created_at, last_seen_at, expires_at, revoked_at)
-		VALUES (:id, :user_id, :token_hash, :ip, :user_agent, :created_at, :last_seen_at, :expires_at, :revoked_at)`, sess)
-	if err != nil {
-		return fmt.Errorf("创建会话失败: %w", err)
-	}
-	return nil
 }
 
 func (s *Service) rebind(q string) string { return s.db.Rebind(q) }

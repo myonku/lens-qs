@@ -1,15 +1,14 @@
-// Command migrate 执行数据库迁移。
-//
-// 用法：
-//
-//	go run ./cmd/migrate            # 应用全部未执行的迁移
-//	go run ./cmd/migrate -status    # 仅查看已应用版本
+// Command migrate is an explicit offline maintenance boundary. Status/preview
+// never create migration tables. Rebuild requires a verified stopped-write backup.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
+	"os"
 
 	"github.com/myonku/lens-qs-api/internal/pkg/config"
 	"github.com/myonku/lens-qs-api/internal/pkg/database"
@@ -17,42 +16,54 @@ import (
 )
 
 func main() {
-	statusOnly := flag.Bool("status", false, "仅打印已应用的迁移版本")
+	status := flag.Bool("status", false, "read-only inventory")
+	initialize := flag.Bool("initialize", false, "initialize an empty isolated database")
+	rebuild := flag.Bool("rebuild-test-data", false, "explicitly rebuild known v6 inspection test data")
+	target := flag.String("target-fingerprint", "", "fingerprint from status")
+	backup := flag.String("verified-backup", "", "path to restored-and-verified backup receipt")
 	flag.Parse()
-
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatalf("[fatal] 配置错误: %v", err)
+	cfg, e := config.Load()
+	if e != nil {
+		log.Fatal(e)
 	}
-	db, err := database.Open(cfg.DBDriver, cfg.DBDSN, cfg.DBMaxOpen, cfg.DBMaxIdle)
-	if err != nil {
-		log.Fatalf("[fatal] 数据库不可用: %v", err)
+	// Read-only SQLite opens must not create a missing file or change journal mode.
+	var dbDSN = cfg.DBDSN
+	if *status && cfg.DBDriver == "sqlite" {
+		dbDSN = store.ReadOnlySQLiteDSN(dbDSN)
 	}
-	defer func() { _ = db.Close() }()
-
+	db, e := database.Open(cfg.DBDriver, dbDSN, 1, 1)
+	if e != nil {
+		log.Fatal("无法打开维护目标")
+	}
+	defer db.Close()
 	ctx := context.Background()
-	if *statusOnly {
-		applied, err := store.AppliedMigrations(ctx, db)
+	if *initialize {
+		e = store.Initialize(ctx, db, cfg.DBDriver)
+	} else if *rebuild {
+		raw, err := os.ReadFile(*backup)
 		if err != nil {
-			log.Fatalf("[fatal] 读取迁移状态失败: %v", err)
+			log.Fatal("需要已验证备份回执")
 		}
-		if len(applied) == 0 {
-			log.Println("[info] 尚无已应用的迁移")
-			return
+		var receipt store.BackupReceipt
+		if json.Unmarshal(raw, &receipt) != nil || receipt.SourceFingerprint != *target || receipt.SourceDigest == "" || receipt.RestoredDigest != receipt.SourceDigest {
+			log.Fatal("备份恢复验证回执与目标不符")
 		}
-		for _, m := range applied {
-			log.Printf("[info] 已应用: v%d %s (%s)", m.Version, m.Name, m.AppliedAt)
+		inv, err := store.Inspect(ctx, db, cfg.DBDriver)
+		if err != nil || inv.DataDigest != receipt.SourceDigest {
+			log.Fatal("目标数据与备份回执不符")
 		}
+		e = store.Rebuild(ctx, db, cfg.DBDriver, *target)
+	} else {
+		inv, err := store.Inspect(ctx, db, cfg.DBDriver)
+		if err != nil {
+			log.Fatal("盘点失败: ", err)
+		}
+		b, _ := json.MarshalIndent(inv, "", "  ")
+		fmt.Println(string(b))
 		return
 	}
-
-	applied, err := store.Migrate(ctx, db, cfg.DBDriver)
-	if err != nil {
-		log.Fatalf("[fatal] 迁移失败: %v", err)
+	if e != nil {
+		log.Fatal(e)
 	}
-	if len(applied) == 0 {
-		log.Println("[info] 数据库已是最新，无需迁移")
-		return
-	}
-	log.Printf("[info] 已应用 %d 个迁移: %v", len(applied), applied)
+	fmt.Println("maintenance complete")
 }

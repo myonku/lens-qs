@@ -13,6 +13,7 @@ import (
 
 	"github.com/myonku/lens-qs-api/internal/pkg/config"
 	"github.com/myonku/lens-qs-api/internal/pkg/database"
+	"github.com/myonku/lens-qs-api/internal/pkg/httpx"
 	"github.com/myonku/lens-qs-api/internal/store"
 	"github.com/myonku/lens-qs-api/internal/users"
 )
@@ -22,11 +23,10 @@ func main() {
 	password := flag.String("password", "", "密码（必填）")
 	name := flag.String("name", "", "显示名（默认同登录名）")
 	empNo := flag.String("emp", "", "工号")
-	unit := flag.String("unit", "", "所属单位")
+	department := flag.String("department", "", "所属部门文字")
 	accountType := flag.String("account-type", "", "NORMAL 或 SAMPLING；创建默认 NORMAL，更新省略则保持")
 	isAdmin := flag.Bool("admin", false, "是否管理员")
 	update := flag.Bool("update", false, "已存在时更新（改密码 / 改管理员标记）")
-	noMigrate := flag.Bool("skip-migrate", false, "不自动执行迁移")
 	flag.Parse()
 
 	if *username == "" || *password == "" {
@@ -44,10 +44,8 @@ func main() {
 	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
-	if !*noMigrate {
-		if _, err := store.Migrate(ctx, db, cfg.DBDriver); err != nil {
-			log.Fatalf("[fatal] 迁移失败: %v", err)
-		}
+	if err := store.CheckReady(ctx, db, cfg.DBDriver); err != nil {
+		log.Fatal(err)
 	}
 
 	st := users.NewStore(db, cfg.DBDriver)
@@ -62,8 +60,8 @@ func main() {
 		}
 		u, err := st.Update(ctx, existing.ID, users.UpdateInput{AccountType: opt(*accountType),
 			DisplayName: opt(*name),
-			EmployeeNo:  opt(*empNo),
-			UnitID:      opt(*unit),
+			EmployeeNo:  httpx.Optional[string]{Set: *empNo != "", Value: opt(*empNo)},
+			Department:  httpx.Optional[string]{Set: *department != "", Value: opt(*department)},
 			IsAdmin:     &*isAdmin,
 			Password:    password,
 		})
@@ -79,7 +77,7 @@ func main() {
 		Password:      *password,
 		DisplayName:   *name,
 		EmployeeNo:    opt(*empNo),
-		UnitID:        opt(*unit),
+		Department:    opt(*department),
 		IsAdmin:       *isAdmin,
 		MustChangePwd: false,
 	})

@@ -15,7 +15,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-lensqs}
       POSTGRES_USER: ${POSTGRES_USER:-lens}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lens}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       TZ: Asia/Shanghai
     volumes:
       - lensdata:/var/lib/postgresql/data
@@ -41,14 +41,10 @@ services:
       APP_ENV: prod
       APP_ADDR: ":8080"
       DB_DRIVER: postgres
-      DB_DSN: "postgres://${POSTGRES_USER:-lens}:${POSTGRES_PASSWORD:-lens}@db:5432/${POSTGRES_DB:-lensqs}?sslmode=disable"
-      AUTO_MIGRATE: "true"
-      SEED_ON_START: "true"
+      DB_DSN: "postgres://${POSTGRES_USER:-lens}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-lensqs}?sslmode=disable"
       SESSION_TTL: 12h
       SESSION_IDLE_TTL: 2h
       COOKIE_SECURE: "false"   # 前置 HTTPS 反代时改为 true
-      BOOTSTRAP_ADMIN_USER: ${BOOTSTRAP_ADMIN_USER:-admin}
-      BOOTSTRAP_ADMIN_PASS: ${BOOTSTRAP_ADMIN_PASS:-Admin@12345}
       TZ: Asia/Shanghai
     ports:
       - "${API_PORT:-8080}:8080"

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
-
 	"github.com/myonku/lens-qs-api/internal/pkg/httpx"
 	"github.com/myonku/lens-qs-api/internal/pkg/id"
 	"github.com/myonku/lens-qs-api/internal/pkg/password"
@@ -23,15 +22,15 @@ type User struct {
 	ID             string  `db:"id" json:"id"`
 	Username       string  `db:"username" json:"username"`
 	DisplayName    string  `db:"display_name" json:"display_name"`
-	EmployeeNo     *string `db:"employee_no" json:"employee_no,omitempty"`
-	UnitID         *string `db:"unit_id" json:"unit_id,omitempty"`
+	EmployeeNo     *string `db:"employee_no" json:"employee_no"`
+	Department     *string `db:"department" json:"department"`
 	PasswordHash   string  `db:"password_hash" json:"-"`
 	IsAdmin        bool    `db:"is_admin" json:"is_admin"`
-	MustChangePwd  bool    `db:"must_change_pwd" json:"must_change_pwd"`
+	MustChangePwd  bool    `db:"must_change_pwd" json:"-"`
 	Status         string  `db:"status" json:"status"`
-	FailedAttempts int     `db:"failed_attempts" json:"failed_attempts"`
-	LockedUntil    *string `db:"locked_until" json:"locked_until,omitempty"`
-	LastLoginAt    *string `db:"last_login_at" json:"last_login_at,omitempty"`
+	FailedAttempts int     `db:"failed_attempts" json:"-"`
+	LockedUntil    *string `db:"locked_until" json:"-"`
+	LastLoginAt    *string `db:"last_login_at" json:"-"`
 	CreatedAt      string  `db:"created_at" json:"created_at"`
 	UpdatedAt      string  `db:"updated_at" json:"updated_at"`
 }
@@ -50,7 +49,7 @@ func (s *Store) DB() *sqlx.DB { return s.db }
 
 func (s *Store) rebind(q string) string { return s.db.Rebind(q) }
 
-const columns = `id, username, display_name, employee_no, unit_id, password_hash,
+const columns = `id, username, display_name, employee_no, department, password_hash,
 	is_admin, account_type, must_change_pwd, status, failed_attempts, locked_until, last_login_at,
 	created_at, updated_at`
 
@@ -121,7 +120,7 @@ type CreateInput struct {
 	Password      string
 	DisplayName   string
 	EmployeeNo    *string
-	UnitID        *string
+	Department    *string
 	IsAdmin       bool
 	MustChangePwd bool
 }
@@ -132,19 +131,19 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (*User, error) {
 		in.AccountType = "NORMAL"
 	}
 	if !validAccountType(in.AccountType) {
-		return nil, httpx.BadRequest("account_type 必须为 NORMAL 或 SAMPLING")
+		return nil, httpx.Validation("account_type 必须为 NORMAL 或 SAMPLING", nil)
 	}
 	username := strings.TrimSpace(in.Username)
 	if username == "" {
 		return nil, httpx.BadRequest("登录名（username）不能为空")
 	}
-	if strings.TrimSpace(in.Password) == "" {
-		return nil, httpx.BadRequest("密码不能为空")
+	if err := password.Validate(in.Password); err != nil {
+		return nil, err
 	}
 	if existing, err := s.GetByUsername(ctx, username); err != nil {
 		return nil, err
 	} else if existing != nil {
-		return nil, httpx.Conflict("登录名已存在: " + username)
+		return nil, httpx.Conflict("登录名已存在", map[string]string{"reason": "user_exists"})
 	}
 
 	hash, err := password.Hash(in.Password)
@@ -152,17 +151,15 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (*User, error) {
 		return nil, httpx.BadRequest(err.Error())
 	}
 	name := strings.TrimSpace(in.DisplayName)
-	if name == "" {
-		name = username
-	}
+
 	now := store.FormatTime(time.Now())
 	u := &User{
 		AccountType:   in.AccountType,
 		ID:            id.New(),
 		Username:      username,
 		DisplayName:   name,
-		EmployeeNo:    in.EmployeeNo,
-		UnitID:        in.UnitID,
+		EmployeeNo:    clean(in.EmployeeNo),
+		Department:    clean(in.Department),
 		PasswordHash:  hash,
 		IsAdmin:       in.IsAdmin,
 		MustChangePwd: in.MustChangePwd,
@@ -170,13 +167,33 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (*User, error) {
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
-	_, err = store.NamedExec(ctx, s.db, `INSERT INTO users (`+columns+`) VALUES (
-		:id, :username, :display_name, :employee_no, :unit_id, :password_hash,
-		:is_admin, :account_type, :must_change_pwd, :status, :failed_attempts, :locked_until, :last_login_at,
-		:created_at, :updated_at)`, u)
+	w, err := store.BeginWrite(ctx, s.db, "", false, nil)
 	if err != nil {
-		return nil, fmt.Errorf("创建用户失败: %w", err)
+		return nil, err
 	}
+	defer w.Close()
+	if w.Actor.ID != "" && !w.Actor.Admin {
+		return nil, httpx.Forbidden("admin required")
+	}
+	query, args, err := sqlx.Named(`INSERT INTO users (`+columns+`) VALUES (:id,:username,:display_name,:employee_no,:department,:password_hash,:is_admin,:account_type,:must_change_pwd,:status,:failed_attempts,:locked_until,:last_login_at,:created_at,:updated_at)`, u)
+	if err != nil {
+		return nil, err
+	}
+	for i, v := range args {
+		if b, ok := v.(bool); ok {
+			args[i] = store.BoolInt(b)
+		}
+	}
+	if _, err = w.ExecContext(w.Context, w.Rebind(query), args...); err != nil {
+		return nil, userError(err)
+	}
+	if err = w.Event("create", "user", u.ID, nil, u, nil); err != nil {
+		return nil, err
+	}
+	if err = w.Commit(); err != nil {
+		return nil, err
+	}
+
 	return u, nil
 }
 
@@ -184,8 +201,8 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (*User, error) {
 type UpdateInput struct {
 	AccountType *string
 	DisplayName *string
-	EmployeeNo  *string
-	UnitID      *string
+	EmployeeNo  httpx.Optional[string]
+	Department  httpx.Optional[string]
 	IsAdmin     *bool
 	Status      *string
 	Password    *string
@@ -193,13 +210,13 @@ type UpdateInput struct {
 
 // Update 修改用户。
 func (s *Store) Update(ctx context.Context, userID string, in UpdateInput) (*User, error) {
-	tx, err := s.db.BeginTxx(ctx, nil)
+	tx, err := store.BeginWrite(ctx, s.db, "", false, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, "UPDATE v2_write_lock SET version = version + 1 WHERE id = 1"); err != nil {
-		return nil, err
+	defer tx.Close()
+	if tx.Actor.ID != "" && !tx.Actor.Admin {
+		return nil, httpx.Forbidden("admin required")
 	}
 	u := &User{}
 	err = tx.GetContext(ctx, u, tx.Rebind("SELECT "+columns+" FROM users WHERE id = ?"), userID)
@@ -212,34 +229,35 @@ func (s *Store) Update(ctx context.Context, userID string, in UpdateInput) (*Use
 	if u == nil {
 		return nil, httpx.NotFound("用户不存在")
 	}
+	before := *u
 	if in.AccountType != nil {
 		if !validAccountType(*in.AccountType) {
-			return nil, httpx.BadRequest("account_type 必须为 NORMAL 或 SAMPLING")
+			return nil, httpx.Validation("account_type 必须为 NORMAL 或 SAMPLING", nil)
 		}
 		u.AccountType = *in.AccountType
 	}
 	if in.DisplayName != nil {
 		u.DisplayName = strings.TrimSpace(*in.DisplayName)
 	}
-	if in.EmployeeNo != nil {
-		u.EmployeeNo = blankToNil(*in.EmployeeNo)
+	if in.EmployeeNo.Set {
+		u.EmployeeNo = clean(in.EmployeeNo.Value)
 	}
-	if in.UnitID != nil {
-		u.UnitID = blankToNil(*in.UnitID)
+	if in.Department.Set {
+		u.Department = clean(in.Department.Value)
 	}
 	if in.IsAdmin != nil {
 		u.IsAdmin = *in.IsAdmin
 	}
 	if in.Status != nil {
-		st := strings.ToLower(strings.TrimSpace(*in.Status))
+		st := *in.Status
 		if st != "active" && st != "disabled" {
-			return nil, httpx.BadRequest("状态只能是 active 或 disabled")
+			return nil, httpx.Validation("状态只能是 active 或 disabled", nil)
 		}
 		u.Status = st
 	}
 	if in.Password != nil {
-		if strings.TrimSpace(*in.Password) == "" {
-			return nil, httpx.BadRequest("密码不能为空")
+		if err := password.Validate(*in.Password); err != nil {
+			return nil, err
 		}
 		hash, err := password.Hash(*in.Password)
 		if err != nil {
@@ -249,10 +267,28 @@ func (s *Store) Update(ctx context.Context, userID string, in UpdateInput) (*Use
 		u.FailedAttempts = 0
 		u.LockedUntil = nil
 	}
+	if tx.Actor.ID == u.ID && (in.IsAdmin != nil && !*in.IsAdmin || in.Status != nil && *in.Status == "disabled") {
+		return nil, httpx.Conflict("self_admin_change_forbidden", map[string]string{"reason": "self_admin_change_forbidden"})
+	}
+	if !u.IsAdmin || u.Status != "active" {
+		var n int
+		if err = tx.GetContext(tx.Context, &n, tx.Rebind(`SELECT COUNT(*) FROM users WHERE is_admin=1 AND status='active' AND id<>?`), u.ID); err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			var wasAdmin bool
+			if err = tx.GetContext(tx.Context, &wasAdmin, tx.Rebind(`SELECT is_admin FROM users WHERE id=?`), u.ID); err != nil {
+				return nil, err
+			}
+			if wasAdmin {
+				return nil, httpx.Conflict("last_admin_required")
+			}
+		}
+	}
 	u.UpdatedAt = store.FormatTime(time.Now())
 
 	query, args, err := sqlx.Named(`UPDATE users SET
-		display_name = :display_name, employee_no = :employee_no, unit_id = :unit_id,
+		display_name = :display_name, employee_no = :employee_no, department = :department,
 		password_hash = :password_hash, is_admin = :is_admin, account_type = :account_type, status = :status,
 		failed_attempts = :failed_attempts, locked_until = :locked_until, updated_at = :updated_at
 		WHERE id = :id`, u)
@@ -265,7 +301,7 @@ func (s *Store) Update(ctx context.Context, userID string, in UpdateInput) (*Use
 		}
 	}
 	if _, err = tx.ExecContext(ctx, tx.Rebind(query), args...); err != nil {
-		return nil, fmt.Errorf("更新用户失败: %w", err)
+		return nil, userError(err)
 	}
 	if in.AccountType != nil || in.Password != nil || in.Status != nil && *in.Status == "disabled" {
 		if _, err = tx.ExecContext(ctx, tx.Rebind("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL"), nowTime(), u.ID); err != nil {
@@ -275,33 +311,20 @@ func (s *Store) Update(ctx context.Context, userID string, in UpdateInput) (*Use
 			return nil, err
 		}
 	}
+	if err = tx.Event("update", "user", u.ID, before, u, nil); err != nil {
+		return nil, err
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
 	return u, nil
 }
 
-// UpdateLoginState 更新登录失败计数、锁定时间与最后登录时间。
-func (s *Store) UpdateLoginState(ctx context.Context, userID string, failed int, lockedUntil, lastLogin *string) error {
-	_, err := s.db.ExecContext(ctx, s.rebind(`UPDATE users SET
-		failed_attempts = ?, locked_until = ?, last_login_at = COALESCE(?, last_login_at),
-		updated_at = ? WHERE id = ?`),
-		failed, lockedUntil, lastLogin, store.FormatTime(time.Now()), userID)
-	if err != nil {
-		return fmt.Errorf("更新登录状态失败: %w", err)
+func clean(s *string) *string {
+	if s == nil {
+		return nil
 	}
-	return nil
-}
-
-// SetPassword 直接设置密码哈希（用于改密）。
-func (s *Store) SetPassword(ctx context.Context, userID, hash string, mustChange bool) error {
-	_, err := s.db.ExecContext(ctx, s.rebind(`UPDATE users SET
-		password_hash = ?, must_change_pwd = ?, failed_attempts = 0, locked_until = NULL,
-		updated_at = ? WHERE id = ?`), hash, store.BoolInt(mustChange), store.FormatTime(time.Now()), userID)
-	if err != nil {
-		return fmt.Errorf("更新密码失败: %w", err)
-	}
-	return nil
+	return blankToNil(*s)
 }
 
 func blankToNil(s string) *string {
@@ -314,3 +337,12 @@ func blankToNil(s string) *string {
 
 func validAccountType(s string) bool { return s == "NORMAL" || s == "SAMPLING" }
 func nowTime() string                { return store.FormatTime(time.Now()) }
+
+func userError(err error) error {
+	e := store.StorageError(err)
+	var h *httpx.Error
+	if errors.As(e, &h) && h.Status == 409 {
+		return httpx.Conflict("登录名或工号已存在", map[string]string{"reason": "user_exists"})
+	}
+	return e
+}

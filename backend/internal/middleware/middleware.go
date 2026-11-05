@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-
 	"github.com/myonku/lens-qs-api/internal/pkg/httpx"
+	"github.com/myonku/lens-qs-api/internal/store"
 )
 
 // 上下文键
@@ -33,9 +33,28 @@ type Principal struct {
 }
 
 // Auth 要求请求携带有效会话（Cookie 或 Authorization: Bearer）。
-func Auth(a Authenticator, cookieName string) gin.HandlerFunc {
+func Auth(a Authenticator, cookieName string, origins ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token := TokenFromRequest(c, cookieName)
+		token, err := credentials(c, cookieName)
+		if err != nil {
+			httpx.Fail(c, err)
+			c.Abort()
+			return
+		}
+		cookie, _ := c.Cookie(cookieName)
+		if cookie != "" && c.GetHeader("Authorization") == "" && c.Request.Method != "GET" && c.Request.Method != "HEAD" {
+			allowed := false
+			for _, origin := range origins {
+				if origin != "*" && origin == c.GetHeader("Origin") {
+					allowed = true
+				}
+			}
+			if !allowed {
+				httpx.Fail(c, httpx.Forbidden("cookie_origin_forbidden"))
+				c.Abort()
+				return
+			}
+		}
 		if token == "" {
 			httpx.Fail(c, httpx.Unauthorized("缺少会话信息，请先登录"))
 			c.Abort()
@@ -51,6 +70,7 @@ func Auth(a Authenticator, cookieName string) gin.HandlerFunc {
 		c.Set(CtxUserID, p.UserID)
 		c.Set(CtxUserName, p.DisplayName)
 		c.Set(CtxIsAdmin, p.IsAdmin)
+		c.Request = c.Request.WithContext(store.WithActor(c.Request.Context(), p.UserID))
 		c.Next()
 	}
 }
@@ -67,19 +87,24 @@ func AdminOnly() gin.HandlerFunc {
 	}
 }
 
-// TokenFromRequest 依次从 Cookie、Authorization 头、X-Auth-Token 头提取令牌。
+func credentials(c *gin.Context, cookieName string) (string, error) {
+	cookie, _ := c.Cookie(cookieName)
+	h := c.GetHeader("Authorization")
+	if h != "" {
+		parts := strings.Fields(h)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			return "", httpx.Unauthorized("")
+		}
+		if cookie != "" && cookie != parts[1] {
+			return "", httpx.BadRequest("credentials_conflict", map[string]string{"reason": "credentials_conflict"})
+		}
+		return parts[1], nil
+	}
+	return cookie, nil
+}
 func TokenFromRequest(c *gin.Context, cookieName string) string {
-	if cookieName != "" {
-		if v, err := c.Cookie(cookieName); err == nil && strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v)
-		}
-	}
-	if h := c.GetHeader("Authorization"); h != "" {
-		if i := strings.IndexByte(h, ' '); i > 0 && strings.EqualFold(h[:i], "bearer") {
-			return strings.TrimSpace(h[i+1:])
-		}
-	}
-	return strings.TrimSpace(c.GetHeader("X-Auth-Token"))
+	token, _ := credentials(c, cookieName)
+	return token
 }
 
 // CurrentPrincipal 返回当前调用者；未认证时返回 nil。
@@ -140,12 +165,8 @@ func CORS(origins []string) gin.HandlerFunc {
 			h.Set("Vary", "Origin")
 			h.Set("Access-Control-Allow-Credentials", "true")
 			h.Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
-			// 必须覆盖前端实际会发的自定义头，否则预检失败：
-			// Authorization / X-Auth-Token（认证）、X-Request-Id（追踪）、
-			// X-Idempotency-Key 与 Idempotency-Key（幂等写入）。
 			h.Set("Access-Control-Allow-Headers",
-				"Authorization, Content-Type, X-Auth-Token, X-Request-Id, "+
-					"X-Idempotency-Key, Idempotency-Key")
+				"Authorization, Content-Type, X-Request-Id, X-Idempotency-Key")
 			h.Set("Access-Control-Expose-Headers", "X-Request-Id, X-Idempotent-Replay")
 			h.Set("Access-Control-Max-Age", "600")
 		}

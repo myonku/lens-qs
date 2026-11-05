@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/jmoiron/sqlx"
-
 	_ "modernc.org/sqlite"
 )
 
@@ -21,7 +20,7 @@ func NewTestDB(t *testing.T) *sqlx.DB {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 
-	if _, err := MigrateFrom(context.Background(), db, "sqlite", "sqlite"); err != nil {
+	if err := Initialize(context.Background(), db, "sqlite"); err != nil {
 		t.Fatalf("执行迁移失败: %v", err)
 	}
 	return db

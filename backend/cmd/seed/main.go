@@ -2,7 +2,7 @@
 //
 // 用法：
 //
-//	go run ./cmd/seed                 # 字典 + 参考部件号（数据已存在时跳过/更新）
+//	go run ./cmd/seed                 # 字典 + 参考部件号（仅填补缺项，不覆盖人工资料）
 //	go run ./cmd/seed -drawings-only  # 只导入参考部件号
 //
 // 说明：参考部件号清单来自业务方提供的图纸清单（序号 05~22）。
@@ -27,7 +27,6 @@ const drawingsFile = "data/reference_drawings.csv"
 
 func main() {
 	drawingsOnly := flag.Bool("drawings-only", false, "只导入参考部件号")
-	skipMigrate := flag.Bool("skip-migrate", false, "不自动执行迁移")
 	flag.Parse()
 
 	cfg, err := config.Load()
@@ -41,10 +40,8 @@ func main() {
 	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
-	if !*skipMigrate {
-		if _, err := store.Migrate(ctx, db, cfg.DBDriver); err != nil {
-			log.Fatalf("[fatal] 迁移失败: %v", err)
-		}
+	if err := store.CheckReady(ctx, db, cfg.DBDriver); err != nil {
+		log.Fatal(err)
 	}
 
 	dictStore := dictionary.NewStore(db, cfg.DBDriver)
@@ -71,9 +68,6 @@ func seedDict(ctx context.Context, st *dictionary.Store) error {
 	items := []item{
 		// 工序（检验工序）：表单的第一列，也是"找到自己工序所在表单"的依据。
 		// 工序引用稳定字典 ID，后续可以维护。
-		{dictionary.CategoryProcess, "GENERAL", "一般检验", 0},
-		{dictionary.CategoryProcess, "一次加硬", "一次加硬", 10},
-		{dictionary.CategoryProcess, "二次加硬", "二次加硬", 20},
 		{dictionary.CategoryInspectionOp, "GENERAL", "一般检验", 0},
 		{dictionary.CategoryInspectionOp, "一次加硬", "一次加硬", 10},
 		{dictionary.CategoryInspectionOp, "二次加硬", "二次加硬", 20},
@@ -102,7 +96,7 @@ func seedDict(ctx context.Context, st *dictionary.Store) error {
 		{dictionary.CategorySampleClass, "MONOC_AND_BINOC", "MONOC & BINOC", 30},
 	}
 	for _, it := range items {
-		if _, err := st.UpsertItem(ctx, &dictionary.Item{
+		if err := st.InitializeItem(ctx, &dictionary.Item{
 			Category: it.category, Code: it.code, Label: it.label, SortNo: it.sortNo, Active: true,
 		}); err != nil {
 			return err
@@ -146,11 +140,11 @@ func seedDrawings(ctx context.Context, st *dictionary.Store) error {
 		applyDimensions(&d, drawing)
 		list = append(list, d)
 	}
-	inserted, updated, err := st.UpsertDrawings(ctx, list)
+	inserted, err := st.InitializeDrawings(ctx, list)
 	if err != nil {
 		return err
 	}
-	log.Printf("[info] 参考部件号: 新增 %d，更新 %d，合计 %d", inserted, updated, len(list))
+	log.Printf("[info] 参考部件号: 新增 %d，更新 %d，合计 %d", inserted, 0, len(list))
 	return nil
 }
 

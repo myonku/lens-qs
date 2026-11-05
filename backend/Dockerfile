@@ -18,6 +18,8 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/lens-qs-migrate ./cmd/migrate \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/lens-qs-backup ./cmd/backup \
+ && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/lens-qs-seed ./cmd/seed \
  && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/lens-qs-createuser ./cmd/createuser \
@@ -39,8 +41,7 @@ COPY data/*.csv /app/data/
 
 ENV APP_ENV=prod \
     APP_ADDR=:8080 \
-    DB_DRIVER=postgres \
-    AUTO_MIGRATE=true
+    DB_DRIVER=postgres
 
 EXPOSE 8080
 

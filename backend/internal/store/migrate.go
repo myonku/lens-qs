@@ -1,123 +1,267 @@
-// Package store 提供数据库迁移执行器。
 package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"path"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jmoiron/sqlx"
-
+	"github.com/myonku/lens-qs-api/internal/formfields"
 	"github.com/myonku/lens-qs-api/migrations"
 )
 
-// Migrate 应用尚未执行的迁移。幂等：已应用过的版本会跳过。
-func Migrate(ctx context.Context, db *sqlx.DB, driver string) (applied []string, err error) {
-	return MigrateFrom(ctx, db, driver, "")
-}
-
-// MigrateFrom 与 Migrate 相同，但允许指定迁移文件所在目录
-// （默认 migrations/<driver>；传 dir 可覆盖，便于测试或在异目录运行）。
-func MigrateFrom(ctx context.Context, db *sqlx.DB, driver, dir string) (applied []string, err error) {
-	if driver != "sqlite" && driver != "postgres" {
-		return nil, fmt.Errorf("不支持的迁移驱动: %q", driver)
-	}
-	if err := ensureMigrationTable(ctx, db); err != nil {
-		return nil, err
-	}
-	done, err := appliedVersions(ctx, db)
+// Initialize is the only empty-database entry; known old databases must use
+// Rebuild with an inventory fingerprint and verified backup at the CLI boundary.
+func Initialize(ctx context.Context, db *sqlx.DB, driver string) error {
+	rows, err := AppliedMigrations(ctx, db)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	if dir == "" {
-		// 注意：go:embed 会把"包含 embed 指令的目录"作为根，
-		// 因此 migrations.FS 里是 "sqlite/..."、"postgres/..."，不带 migrations 前缀。
-		dir = driver
+	if len(rows) == 7 {
+		return CheckReady(ctx, db, driver)
 	}
-	entries, err := fs.ReadDir(migrations.FS, dir)
-	if err != nil {
-		return nil, fmt.Errorf("读取迁移目录失败: %w", err)
+	if len(rows) > 0 {
+		return fmt.Errorf("initialize requires an empty database")
 	}
-
-	type item struct {
-		version int
-		name    string
+	var n int
+	q := `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
+	if driver == "postgres" {
+		q = `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=current_schema()`
 	}
-	var items []item
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".up.sql") {
-			continue
-		}
-		v, err := versionOf(e.Name())
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item{version: v, name: e.Name()})
+	if err = db.GetContext(ctx, &n, q); err != nil {
+		return err
 	}
-	sort.Slice(items, func(i, j int) bool { return items[i].version < items[j].version })
-
-	for _, it := range items {
-		if done[it.version] {
-			continue
-		}
-		raw, err := migrations.FS.ReadFile(path.Join(dir, it.name))
-		if err != nil {
-			return nil, fmt.Errorf("读取迁移 %s 失败: %w", it.name, err)
-		}
-		statements := splitStatements(string(raw))
-		if err := applyMigration(ctx, db, it.version, it.name, statements); err != nil {
-			return applied, err
-		}
-		applied = append(applied, it.name)
+	if n != 0 {
+		return fmt.Errorf("initialize refuses unrecognized tables")
 	}
-	return applied, nil
-}
-
-func ensureMigrationTable(ctx context.Context, db *sqlx.DB) error {
-	ddl := `CREATE TABLE IF NOT EXISTS schema_migrations (
-  version    INTEGER PRIMARY KEY,
-  name       TEXT NOT NULL,
-  applied_at TEXT NOT NULL
-)`
-	_, err := db.ExecContext(ctx, ddl)
+	_, err = migrate(ctx, db, driver, 7, true)
 	return err
 }
-
-func appliedVersions(ctx context.Context, db *sqlx.DB) (map[int]bool, error) {
-	var versions []int
-	if err := db.SelectContext(ctx, &versions, `SELECT version FROM schema_migrations`); err != nil {
-		return nil, fmt.Errorf("读取已应用迁移失败: %w", err)
+func migrate(ctx context.Context, db *sqlx.DB, driver string, limit int, explicit bool, expectedData ...string) ([]string, error) {
+	if driver != "sqlite" && driver != "postgres" {
+		return nil, fmt.Errorf("unsupported driver")
 	}
-	out := make(map[int]bool, len(versions))
-	for _, v := range versions {
-		out[v] = true
-	}
-	return out, nil
-}
-
-func applyMigration(ctx context.Context, db *sqlx.DB, version int, name string, statements []string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	tx, err := db.BeginTxx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("开启事务失败: %w", err)
+		return nil, err
 	}
-	defer func() { _ = tx.Rollback() }()
-
-	for _, stmt := range statements {
-		if _, err := tx.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("执行迁移 %s 失败: %w\n语句: %s", name, err, truncate(stmt, 200))
+	defer tx.Rollback()
+	if driver == "postgres" {
+		if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(74192711)`); err != nil {
+			return nil, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx,
-		db.Rebind(`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`),
-		version, name, nowText()); err != nil {
-		return fmt.Errorf("记录迁移版本失败: %w", err)
+	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL)`); err != nil {
+		return nil, err
 	}
-	return tx.Commit()
+	// This first write also serializes SQLite maintenance across instances.
+	if _, err = tx.ExecContext(ctx, `UPDATE schema_migrations SET name=name WHERE version=1`); err != nil {
+		return nil, err
+	}
+	if len(expectedData) > 0 {
+		var tables []string
+		q := `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+		if driver == "postgres" {
+			q = `SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() ORDER BY table_name`
+		}
+		if err = tx.SelectContext(ctx, &tables, q); err != nil {
+			return nil, err
+		}
+		actual, e := dataDigest(ctx, tx, tables)
+		if e != nil {
+			return nil, e
+		}
+		if actual != expectedData[0] {
+			return nil, fmt.Errorf("target changed after inventory")
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS migration_checksums(version INTEGER PRIMARY KEY, digest TEXT NOT NULL, provenance TEXT NOT NULL)`); err != nil {
+		return nil, err
+	}
+	var done []AppliedMigration
+	if err = tx.SelectContext(ctx, &done, `SELECT version,name,applied_at FROM schema_migrations ORDER BY version`); err != nil {
+		return nil, err
+	}
+	entries, err := fs.ReadDir(migrations.FS, driver)
+	if err != nil {
+		return nil, err
+	}
+	names := map[int]string{}
+	var versions []int
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".up.sql") {
+			continue
+		}
+		v, e2 := versionOf(e.Name())
+		if e2 != nil {
+			return nil, e2
+		}
+		if names[v] != "" {
+			return nil, fmt.Errorf("duplicate migration version")
+		}
+		names[v] = e.Name()
+		versions = append(versions, v)
+	}
+	sort.Ints(versions)
+	applied := map[int]bool{}
+	for i, m := range done {
+		if m.Version != i+1 || names[m.Version] != m.Name {
+			return nil, fmt.Errorf("unknown, missing or renamed migration at version %d", m.Version)
+		}
+		raw, _ := migrations.FS.ReadFile(path.Join(driver, m.Name))
+		h := digest(raw)
+		var stored string
+		err = tx.GetContext(ctx, &stored, tx.Rebind(`SELECT digest FROM migration_checksums WHERE version=?`), m.Version)
+		if err == sql.ErrNoRows {
+			// A legacy receipt proves names/shape only, never past file integrity.
+			if m.Version > 6 {
+				return nil, fmt.Errorf("missing checksum for new migration")
+			}
+			if _, err = tx.ExecContext(ctx, tx.Rebind(`INSERT INTO migration_checksums VALUES(?,?,?)`), m.Version, h, "legacy-name-and-shape-baseline"); err != nil {
+				return nil, err
+			}
+		} else if err != nil {
+			return nil, err
+		} else if stored != h {
+			return nil, fmt.Errorf("migration checksum mismatch: %d", m.Version)
+		}
+		applied[m.Version] = true
+	}
+	if len(done) > 0 && len(done) < 6 {
+		return nil, fmt.Errorf("legacy versions before 0006 require a separate preservation analysis")
+	}
+	if applied[7] {
+		return nil, tx.Commit()
+	}
+	if limit == 7 && !explicit {
+		return nil, fmt.Errorf("explicit rebuild required")
+	}
+	if applied[6] && limit == 7 {
+		if err = preflightTx(ctx, tx); err != nil {
+			return nil, err
+		}
+	}
+	before := ""
+	if limit == 7 {
+		if applied[6] {
+			before, err = preservedDigest(ctx, tx, false)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	var out []string
+	for _, v := range versions {
+		if v > limit || applied[v] {
+			continue
+		}
+		raw, _ := migrations.FS.ReadFile(path.Join(driver, names[v]))
+		for _, stmt := range splitStatements(string(raw)) {
+			if _, err = tx.ExecContext(ctx, stmt); err != nil {
+				return nil, fmt.Errorf("migration %s: %w", names[v], err)
+			}
+		}
+		if _, err = tx.ExecContext(ctx, tx.Rebind(`INSERT INTO schema_migrations VALUES(?,?,?)`), v, names[v], nowText()); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, tx.Rebind(`INSERT INTO migration_checksums VALUES(?,?,?)`), v, digest(raw), "applied-and-verified"); err != nil {
+			return nil, err
+		}
+		out = append(out, names[v])
+	}
+	if limit == 7 {
+		definition, _ := json.Marshal(formfields.Catalog())
+		layout, _ := json.Marshal(formfields.Layout())
+		if _, err = tx.ExecContext(ctx, tx.Rebind(`INSERT INTO field_schemas VALUES(?,?)`), "2", string(definition)); err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, tx.Rebind(`INSERT INTO form_templates VALUES(?,?,?)`), "general-1", "2", string(layout)); err != nil {
+			return nil, err
+		}
+
+	}
+	if before != "" {
+		if err = receipt(ctx, tx, before); err != nil {
+			return nil, err
+		}
+	}
+	return out, tx.Commit()
+}
+func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+func CheckReady(ctx context.Context, db *sqlx.DB, driver string) error {
+	rows, err := AppliedMigrations(ctx, db)
+	if err != nil {
+		return err
+	}
+	if len(rows) != 7 {
+		return fmt.Errorf("expected schema 0007; use explicit initialization/rebuild")
+	}
+	for i, m := range rows {
+		if m.Version != i+1 {
+			return fmt.Errorf("noncontiguous migration version")
+		}
+		v, e := versionOf(m.Name)
+		if e != nil || v != m.Version {
+			return fmt.Errorf("migration name/version mismatch")
+		}
+		raw, e := migrations.FS.ReadFile(driver + "/" + m.Name)
+		if e != nil {
+			return e
+		}
+		var h string
+		if e = db.GetContext(ctx, &h, db.Rebind(`SELECT digest FROM migration_checksums WHERE version=?`), m.Version); e != nil {
+			return e
+		}
+		if h != digest(raw) {
+			return fmt.Errorf("migration integrity mismatch")
+		}
+	}
+	var n int
+	if err = db.GetContext(ctx, &n, `SELECT COUNT(*) FROM write_gate JOIN rebuild_state ON write_gate.id=rebuild_state.id WHERE write_gate.id=1`); err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("missing foundation singleton")
+	}
+	for _, q := range []string{`SELECT department,account_type FROM users LIMIT 0`, `SELECT state,current_revision_id,last_saved_by FROM inspection_submissions LIMIT 0`, `SELECT content_json,content_schema_version,saved_actor_name FROM submission_revisions LIMIT 0`, `SELECT operation_label,created_by FROM operation_groups LIMIT 0`, `SELECT transaction_id,actor_name FROM business_events LIMIT 0`, `SELECT kind,direction,quantity,reason FROM quantity_changes LIMIT 0`, `SELECT operation_group_id,batch_key,submission_id FROM submission_slots LIMIT 0`, `SELECT fingerprint,response_status,response_body,expires_at FROM v2_idempotency_requests LIMIT 0`, `SELECT parser_version,dictionary_version,needs_review FROM sample_parse_cache LIMIT 0`, `SELECT code,name FROM units LIMIT 0`, `SELECT category,code,meta FROM dict_items LIMIT 0`, `SELECT schema_version,layout FROM form_templates LIMIT 0`} {
+		rows, e := db.QueryxContext(ctx, q)
+		if e != nil {
+			return fmt.Errorf("incompatible foundation shape")
+		}
+		rows.Close()
+	}
+	cols := []string{"revision_id", "seq", "total_qty", "qualified_qty", "defect_qty", "remark"}
+	for _, code := range formfields.DefectCodes() {
+		for _, surface := range formfields.Surfaces {
+			cols = append(cols, code+"_"+surface)
+		}
+	}
+	lineRows, e := db.QueryxContext(ctx, `SELECT `+strings.Join(cols, ",")+` FROM revision_lines LIMIT 0`)
+	if e != nil {
+		return fmt.Errorf("incompatible revision line shape")
+	}
+	lineRows.Close()
+	catalog, e := ReadCatalog(ctx, db, "2")
+	if e != nil {
+		return e
+	}
+	actual, _ := json.Marshal(catalog)
+	expected, _ := json.Marshal(formfields.Catalog())
+	if string(actual) != string(expected) {
+		return fmt.Errorf("immutable field schema mismatch")
+	}
+	return nil
 }
 
 func versionOf(filename string) (int, error) {
