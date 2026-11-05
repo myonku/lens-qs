@@ -64,7 +64,7 @@ type Drawing struct {
 	SizeCode    *string `db:"size_code" json:"size_code,omitempty"`
 	SideCode    *string `db:"side_code" json:"side_code,omitempty"`
 	ClassCode   *string `db:"class_code" json:"class_code,omitempty"`
-	IsRx        bool    `db:"is_rx" json:"is_rx"`
+	IsRx        *bool   `db:"is_rx" json:"is_rx"`
 	Active      bool    `db:"active" json:"active"`
 	Note        *string `db:"note" json:"note,omitempty"`
 	CreatedAt   string  `db:"created_at" json:"created_at"`
@@ -170,6 +170,9 @@ func (s *Store) writeItem(w *store.WriteTx, it *Item, before any) (*Item, error)
 		it.Label = it.Code
 	}
 	it.UpdatedAt = w.Time
+	if _, e := w.ExecContext(w.Context, `UPDATE shared_catalog_state SET version=version+1 WHERE id=1`); e != nil {
+		return nil, e
+	}
 	q := `UPDATE dict_items SET label=:label,sort_no=:sort_no,active=:active,meta=:meta,updated_at=:updated_at WHERE id=:id`
 	if before == nil {
 		it.ID = id.New()
@@ -300,12 +303,15 @@ func (s *Store) InitializeDrawings(ctx context.Context, list []Drawing) (int, er
 		d.ID = id.New()
 		d.CreatedAt = w.Time
 		d.UpdatedAt = w.Time
-		if _, e = w.ExecContext(w.Context, w.Rebind(`INSERT INTO sample_drawings(id,seq_no,drawing_no,project_code,model_code,spec_code,size_code,side_code,class_code,is_rx,active,note,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), d.ID, d.SeqNo, d.DrawingNo, d.ProjectCode, d.ModelCode, d.SpecCode, d.SizeCode, d.SideCode, d.ClassCode, store.BoolInt(d.IsRx), store.BoolInt(d.Active), d.Note, d.CreatedAt, d.UpdatedAt); e != nil {
+		if _, e = w.ExecContext(w.Context, w.Rebind(`INSERT INTO sample_drawings(id,seq_no,drawing_no,project_code,model_code,spec_code,size_code,side_code,class_code,is_rx,active,note,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), d.ID, d.SeqNo, d.DrawingNo, d.ProjectCode, d.ModelCode, d.SpecCode, d.SizeCode, d.SideCode, d.ClassCode, nullableBool(d.IsRx), store.BoolInt(d.Active), d.Note, d.CreatedAt, d.UpdatedAt); e != nil {
 			return 0, e
 		}
 		n++
 	}
 	if n > 0 {
+		if _, e = w.ExecContext(w.Context, `UPDATE shared_catalog_state SET version=version+1 WHERE id=1`); e != nil {
+			return 0, e
+		}
 		if e = w.Event("initialize", "dict_item", "reference-drawings", nil, struct{ Inserted int }{n}, nil); e != nil {
 			return 0, e
 		}

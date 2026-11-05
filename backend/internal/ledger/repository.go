@@ -63,6 +63,7 @@ type Submission struct {
 	CancelReason      *string `db:"cancel_reason" json:"cancel_reason"`
 }
 type Revision struct {
+	changeIDs    []string
 	ID           string  `json:"id"`
 	SubmissionID string  `json:"submission_id"`
 	No           int64   `json:"revision_no"`
@@ -82,9 +83,10 @@ type Detail struct {
 	Issues     []Issue    `json:"issues"`
 }
 type Mutation struct {
-	Lot     *ProductLot `json:"product_lot,omitempty"`
-	Group   *Group      `json:"group,omitempty"`
-	Details []Detail    `json:"details,omitempty"`
+	Lot      *ProductLot `json:"product_lot,omitempty"`
+	Group    *Group      `json:"group,omitempty"`
+	Details  []Detail    `json:"details,omitempty"`
+	Progress *Progress   `json:"progress,omitempty"`
 }
 type Request struct {
 	SuccessStatus              int
@@ -95,6 +97,12 @@ type Repository struct{ w *store.WriteTx }
 
 func reasonConflict(reason string) error {
 	return httpx.Conflict(reason, map[string]string{"reason": reason})
+}
+func versionConflict(id string, current int64) error {
+	return httpx.Conflict("数据已被修改，请刷新核对", map[string]any{"reason": "version_conflict", "entity_id": id, "current_version": current})
+}
+func typeForbidden(expected, target string) error {
+	return httpx.NewError(403, "forbidden", "检验类型不允许", map[string]string{"reason": "inspection_kind_forbidden", "expected_kind": expected, "target_kind": target})
 }
 func Write(ctx context.Context, db *sqlx.DB, req Request, clock func() time.Time, fn func(*Repository) (Mutation, error)) (Mutation, bool, error) {
 	if req.SuccessStatus == 0 {
@@ -180,6 +188,17 @@ func (r *Repository) CreateLot(shared, identity string, reference Content) (Prod
 }
 func (r *Repository) CreateGroup(lotID, operationID string) (Group, error) {
 	w := r.w
+	if _, e := readOne[ProductLot](w.Context, w, `SELECT * FROM product_lots WHERE id=?`, lotID); e != nil {
+		return Group{}, e
+	}
+	var existing string
+	lookupErr := w.GetContext(w.Context, &existing, w.Rebind(`SELECT id FROM operation_groups WHERE product_lot_id=? AND operation_id=? AND inspection_kind=?`), lotID, operationID, w.Actor.Kind)
+	if lookupErr == nil {
+		return Group{}, httpx.Conflict("工序组已存在", map[string]string{"reason": "operation_group_exists", "operation_group_id": existing})
+	}
+	if lookupErr != sql.ErrNoRows {
+		return Group{}, lookupErr
+	}
 	g := Group{ID: id.New(), LotID: lotID, OperationID: operationID, Kind: w.Actor.Kind, Template: "general-1", State: "OPEN", Mode: "EMPTY", Version: 1, CreatedBy: w.Actor.ID, CreatedAt: w.Time}
 	var op struct {
 		Code   string `db:"code"`
@@ -210,7 +229,7 @@ func (r *Repository) group(id string) (Group, error) {
 		return g, e
 	}
 	if g.Kind != r.w.Actor.Kind {
-		return g, httpx.NewError(403, "forbidden", "inspection_kind_forbidden", map[string]string{"reason": "inspection_kind_forbidden"})
+		return g, typeForbidden(r.w.Actor.Kind, g.Kind)
 	}
 	return g, nil
 }
@@ -223,7 +242,7 @@ func (r *Repository) GroupState(id string, expected int64, closed bool, reason s
 		return g, e
 	}
 	if expected != g.Version {
-		return g, reasonConflict("version_conflict")
+		return g, versionConflict(g.ID, g.Version)
 	}
 	if strings.TrimSpace(reason) == "" {
 		return g, invalid("reason_required", "reason")
@@ -253,17 +272,30 @@ func (r *Repository) slot(s Submission, release bool) error {
 	}
 	before := g
 	w := r.w
+	conflict := func(reason string) error {
+		ids := []string{}
+		query := `SELECT submission_id FROM submission_slots WHERE operation_group_id=?`
+		args := []any{g.ID}
+		if reason == "batch_no_exists" {
+			query += ` AND batch_key=?`
+			args = append(args, *s.BatchNo)
+		}
+		if e := w.SelectContext(w.Context, &ids, w.Rebind(query+` ORDER BY submission_id`), args...); e != nil {
+			return e
+		}
+		return httpx.Conflict("检验范围已占用", map[string]any{"reason": reason, "operation_group_id": g.ID, "existing_submission_ids": ids, "existing_scope": g.Mode, "batch_no": s.BatchNo, "allowed_action": "edit_existing"})
+	}
 	if release {
 		_, e = w.ExecContext(w.Context, w.Rebind(`DELETE FROM submission_slots WHERE submission_id=?`), s.ID)
 	} else {
 		if g.State == "CLOSED" {
-			return reasonConflict("operation_group_closed")
+			return httpx.Conflict("工序组已结束填报", map[string]string{"reason": "operation_group_closed", "operation_group_id": g.ID})
 		}
 		if g.Mode == "WHOLE" && s.Scope == "WHOLE" {
-			return reasonConflict("whole_submission_exists")
+			return conflict("whole_submission_exists")
 		}
 		if g.Mode != "EMPTY" && g.Mode != s.Scope {
-			return reasonConflict("batch_scope_conflict")
+			return conflict("batch_scope_conflict")
 		}
 		key := ""
 		if s.BatchNo != nil {
@@ -274,7 +306,7 @@ func (r *Repository) slot(s Submission, release bool) error {
 			return e
 		}
 		if n > 0 {
-			return reasonConflict("batch_no_exists")
+			return conflict("batch_no_exists")
 		}
 		_, e = w.ExecContext(w.Context, w.Rebind(`INSERT INTO submission_slots VALUES(?,?,?)`), g.ID, key, s.ID)
 	}
@@ -307,6 +339,7 @@ type SaveInput struct {
 	ID              string
 	ExpectedVersion int64
 	GroupID         *string
+	GroupSet        bool
 	BatchNo         *string
 	BatchSet        bool
 	Patch           json.RawMessage
@@ -344,13 +377,13 @@ func (r *Repository) Save(in SaveInput) (Detail, error) {
 		}
 		before = s
 		if s.Kind != w.Actor.Kind {
-			return Detail{}, httpx.Forbidden("inspection_kind_forbidden")
+			return Detail{}, typeForbidden(w.Actor.Kind, s.Kind)
 		}
 		if s.State != "ACTIVE" {
 			return Detail{}, reasonConflict("submission_cancelled")
 		}
 		if in.ExpectedVersion != s.Version {
-			return Detail{}, reasonConflict("version_conflict")
+			return Detail{}, versionConflict(s.ID, s.Version)
 		}
 		var raw string
 		var revno int64
@@ -365,8 +398,11 @@ func (r *Repository) Save(in SaveInput) (Detail, error) {
 		no = revno + 1
 		s.Version++
 	}
-	if s.GroupID != nil && (in.GroupID != nil || in.BatchSet) {
-		return Detail{}, reasonConflict("grouped_identity_immutable")
+	if s.GroupID != nil && (in.GroupSet || in.GroupID != nil || in.BatchSet) {
+		return Detail{}, httpx.BadRequest("归组身份不可修改", map[string]string{"reason": "immutable_identity"})
+	}
+	if !create && in.GroupSet && (in.GroupID == nil || strings.TrimSpace(*in.GroupID) == "") {
+		return Detail{}, httpx.BadRequest("绑定组必须非空")
 	}
 	needSlot := create || s.GroupID == nil && in.GroupID != nil
 	if s.GroupID == nil {
@@ -406,7 +442,7 @@ func (r *Repository) Save(in SaveInput) (Detail, error) {
 	if e != nil {
 		return Detail{}, e
 	}
-	rev := Revision{id.New(), s.ID, no, baseID, template, "2", content, w.Actor.ID, w.Actor.Name, w.Time, in.Reason}
+	rev := Revision{ID: id.New(), SubmissionID: s.ID, No: no, BaseID: baseID, Template: template, Schema: "2", Content: content, SavedBy: w.Actor.ID, SavedName: w.Actor.Name, SavedAt: w.Time, Reason: in.Reason}
 	s.CurrentRevisionID = rev.ID
 	s.LastSavedBy = w.Actor.ID
 	s.LastSavedAt = w.Time
@@ -428,6 +464,11 @@ func (r *Repository) Save(in SaveInput) (Detail, error) {
 	if e = r.insertRevision(rev, d); e != nil {
 		return Detail{}, e
 	}
+	output := []Revision{rev}
+	if e = attachChangeIDs(w.Context, w, output); e != nil {
+		return Detail{}, e
+	}
+	rev = output[0]
 	if needSlot {
 		if e = r.slot(s, false); e != nil {
 			return Detail{}, e
@@ -443,8 +484,8 @@ func (r *Repository) insertRevision(rev Revision, d Derived) error {
 	c := rev.Content
 	raw, _ := json.Marshal(c)
 	missing, _ := json.Marshal(d.Missing)
-	q := `INSERT INTO submission_revisions(id,submission_id,revision_no,base_revision_id,template_version,content_schema_version,content_json,saved_by,saved_actor_name,saved_at,reason,total_qty,qualified_qty,defect_qty,paper_inspected_day,paper_submitted_day,machine_no,paper_inspector,paper_submitter,paper_machine_operator,paper_handover_by,sample_raw,sample_project,sample_model,sample_spec,sample_size,sample_side,is_complete,missing_fields) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-	if _, e := w.ExecContext(w.Context, w.Rebind(q), rev.ID, rev.SubmissionID, rev.No, rev.BaseID, rev.Template, rev.Schema, string(raw), rev.SavedBy, rev.SavedName, rev.SavedAt, rev.Reason, c.Counts.Total, c.Counts.Qualified, c.Counts.Defect, d.InspectedDay, d.SubmittedDay, c.MachineNo, c.PaperInspector, c.PaperSubmitter, c.PaperMachineOperator, c.PaperHandoverBy, c.SampleRaw, c.SampleProject, c.SampleModel, c.SampleSpec, c.SampleSize, c.SampleSide, store.BoolInt(d.Complete), string(missing)); e != nil {
+	q := `INSERT INTO submission_revisions(id,submission_id,revision_no,base_revision_id,template_version,content_schema_version,content_json,saved_by,saved_actor_name,saved_at,reason,total_qty,qualified_qty,defect_qty,paper_inspected_day,paper_submitted_day,machine_no,paper_inspector,paper_submitter,paper_machine_operator,paper_handover_by,sample_raw,sample_project,sample_model,sample_spec,sample_size,sample_side,is_complete,missing_fields,paper_unit_text) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	if _, e := w.ExecContext(w.Context, w.Rebind(q), rev.ID, rev.SubmissionID, rev.No, rev.BaseID, rev.Template, rev.Schema, string(raw), rev.SavedBy, rev.SavedName, rev.SavedAt, rev.Reason, c.Counts.Total, c.Counts.Qualified, c.Counts.Defect, d.InspectedDay, d.SubmittedDay, c.MachineNo, c.PaperInspector, c.PaperSubmitter, c.PaperMachineOperator, c.PaperHandoverBy, c.SampleRaw, c.SampleProject, c.SampleModel, c.SampleSpec, c.SampleSize, c.SampleSide, store.BoolInt(d.Complete), string(missing), c.PaperUnitText); e != nil {
 		return e
 	}
 	for _, l := range c.Lines {
@@ -476,16 +517,19 @@ func (r *Repository) Cancel(id string, expected int64, reason string) (Submissio
 	w := r.w
 	var s Submission
 	if e := w.GetContext(w.Context, &s, w.Rebind(`SELECT * FROM inspection_submissions WHERE id=?`), id); e != nil {
+		if e == sql.ErrNoRows {
+			return s, httpx.NotFound("单据不存在")
+		}
 		return s, e
 	}
 	if s.Kind != w.Actor.Kind {
-		return s, httpx.Forbidden("inspection_kind_forbidden")
+		return s, typeForbidden(w.Actor.Kind, s.Kind)
 	}
 	if s.State != "ACTIVE" {
 		return s, reasonConflict("submission_cancelled")
 	}
 	if s.Version != expected {
-		return s, reasonConflict("version_conflict")
+		return s, versionConflict(s.ID, s.Version)
 	}
 	if strings.TrimSpace(reason) == "" {
 		return s, invalid("reason_required", "reason")
@@ -513,7 +557,7 @@ type SelectedRevision struct {
 	ContentJSON  string `db:"content_json"`
 }
 
-func CurrentSet(ctx context.Context, db *sqlx.DB, groupID string) ([]SelectedRevision, error) {
+func CurrentSet(ctx context.Context, db store.Reader, groupID string) ([]SelectedRevision, error) {
 	out := []SelectedRevision{}
 	e := db.SelectContext(ctx, &out, db.Rebind(`SELECT s.id AS submission_id,r.id AS revision_id,r.content_json FROM inspection_submissions s JOIN submission_revisions r ON r.id=s.current_revision_id AND r.submission_id=s.id WHERE s.state='ACTIVE' AND s.operation_group_id=? ORDER BY s.id`), groupID)
 	return out, e

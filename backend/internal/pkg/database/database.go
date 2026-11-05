@@ -44,7 +44,7 @@ func openSQLite(path string, maxOpen, maxIdle int) (*sqlx.DB, error) {
 	// during legacy-table/index cleanup. Explicit temp_store settings are respected.
 	pragmas := []string{}
 	if !strings.Contains(dsn, "mode=ro") {
-		pragmas = []string{"busy_timeout(5000)", "journal_mode(WAL)", "foreign_keys(1)", "temp_store(MEMORY)"}
+		pragmas = []string{"busy_timeout(5000)", "journal_mode(WAL)", "foreign_keys(1)", "temp_store(MEMORY)", "case_sensitive_like(1)"}
 	}
 	for _, pragma := range pragmas {
 		name := pragma[:strings.IndexByte(pragma, '(')]

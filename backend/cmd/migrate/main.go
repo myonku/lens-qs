@@ -19,6 +19,7 @@ func main() {
 	status := flag.Bool("status", false, "read-only inventory")
 	initialize := flag.Bool("initialize", false, "initialize an empty isolated database")
 	rebuild := flag.Bool("rebuild-test-data", false, "explicitly rebuild known v6 inspection test data")
+	upgrade := flag.Bool("upgrade", false, "explicit non-destructive v7 to v8 upgrade")
 	target := flag.String("target-fingerprint", "", "fingerprint from status")
 	backup := flag.String("verified-backup", "", "path to restored-and-verified backup receipt")
 	flag.Parse()
@@ -39,7 +40,7 @@ func main() {
 	ctx := context.Background()
 	if *initialize {
 		e = store.Initialize(ctx, db, cfg.DBDriver)
-	} else if *rebuild {
+	} else if *rebuild || *upgrade {
 		raw, err := os.ReadFile(*backup)
 		if err != nil {
 			log.Fatal("需要已验证备份回执")
@@ -52,7 +53,11 @@ func main() {
 		if err != nil || inv.DataDigest != receipt.SourceDigest {
 			log.Fatal("目标数据与备份回执不符")
 		}
-		e = store.Rebuild(ctx, db, cfg.DBDriver, *target)
+		if *upgrade {
+			e = store.Upgrade(ctx, db, cfg.DBDriver, *target)
+		} else {
+			e = store.Rebuild(ctx, db, cfg.DBDriver, *target)
+		}
 	} else {
 		inv, err := store.Inspect(ctx, db, cfg.DBDriver)
 		if err != nil {

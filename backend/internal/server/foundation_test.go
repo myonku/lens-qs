@@ -87,8 +87,8 @@ func TestG1SharedHTTPContracts(t *testing.T) {
 	if e != nil || u.Department != nil || u.EmployeeNo != nil {
 		t.Fatal(u, e)
 	}
-	// All retired and not-yet-accepted business routes remain unregistered.
-	for _, path := range []string{"product-lots", "operation-groups", "submissions", "submissions/x/draft", "submissions/x/publish", "stats/summary", "stats/defects", "stats/workload", "reports/operations", "audit-logs", "sample/parse", "sample/cache", "dict/drawings", "dict/drawings/import"} {
+	// Retired paths remain unregistered after the new business routes return.
+	for _, path := range []string{"submissions/x/draft", "submissions/x/publish", "operation-groups", "reports/operations"} {
 		for _, method := range []string{"GET", "POST", "PATCH"} {
 			s, m := call(method, "/api/v2/"+path, "", token, "", "")
 			if s != 404 {

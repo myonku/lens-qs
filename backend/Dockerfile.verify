@@ -1,0 +1,10 @@
+ARG DEPENDENCY_IMAGE=golang:1.26-alpine
+FROM ${DEPENDENCY_IMAGE} AS dependency_cache
+FROM golang:1.26-alpine
+RUN apk add --no-cache build-base docker-cli
+WORKDIR /src
+COPY --from=dependency_cache /go/ /go/
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+CMD ["go", "test", "-race", "./...", "-count=1"]

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	_ "time/tzdata"
@@ -433,6 +434,12 @@ func Derive(c Content, grouped bool, now time.Time) (Derived, []Issue, error) {
 	if c.SubmittedDate != nil && c.InspectedDate != nil && *c.SubmittedDate > *c.InspectedDate || c.SubmittedAt != nil && c.InspectedAt != nil && *c.SubmittedAt > *c.InspectedAt {
 		warn("paper_time_order", "paper_inspected")
 	}
+	sort.SliceStable(issues, func(i, j int) bool {
+		if issues[i].Code != issues[j].Code {
+			return issues[i].Code < issues[j].Code
+		}
+		return issues[i].Path < issues[j].Path
+	})
 	return d, issues, nil
 }
 

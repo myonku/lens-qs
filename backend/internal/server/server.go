@@ -2,7 +2,9 @@
 package server
 
 import (
+	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -10,9 +12,12 @@ import (
 	authhttp "github.com/myonku/lens-qs-api/internal/auth/http"
 	"github.com/myonku/lens-qs-api/internal/dictionary"
 	dictionaryhttp "github.com/myonku/lens-qs-api/internal/dictionary/http"
+	"github.com/myonku/lens-qs-api/internal/formfields"
+	"github.com/myonku/lens-qs-api/internal/ledger"
 	"github.com/myonku/lens-qs-api/internal/middleware"
 	"github.com/myonku/lens-qs-api/internal/pkg/config"
 	"github.com/myonku/lens-qs-api/internal/pkg/httpx"
+	"github.com/myonku/lens-qs-api/internal/sample"
 	"github.com/myonku/lens-qs-api/internal/store"
 	"github.com/myonku/lens-qs-api/internal/users"
 )
@@ -40,6 +45,14 @@ func Build(d Deps) *gin.Engine {
 			return
 		}
 		var allowed []string
+		// New business handlers own their complete endpoint-specific whitelist.
+		path := c.FullPath()
+		for _, prefix := range []string{"/api/v2/product-lots", "/api/v2/operation-groups", "/api/v2/submissions", "/api/v2/stats/", "/api/v2/reports/", "/api/v2/audit-logs", "/api/v2/sample/", "/api/v2/dict/drawings"} {
+			if strings.HasPrefix(path, prefix) {
+				c.Next()
+				return
+			}
+		}
 		switch c.FullPath() {
 		case "/api/v2/users":
 			if c.Request.Method == "GET" {
@@ -60,6 +73,12 @@ func Build(d Deps) *gin.Engine {
 
 	// 健康检查（无需登录）
 	r.GET("/healthz", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+		if err := d.UserStore.DB().PingContext(ctx); err != nil {
+			c.JSON(503, gin.H{"status": "unavailable", "time": time.Now().UTC().Format(time.RFC3339)})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "time": time.Now().UTC().Format(time.RFC3339)})
 	})
 	r.GET("/", func(c *gin.Context) {
@@ -91,7 +110,28 @@ func Build(d Deps) *gin.Engine {
 			httpx.Fail(c, e)
 			return
 		}
-		httpx.OK(c, catalog)
+		type surface struct {
+			Code  string `json:"code"`
+			Label string `json:"label"`
+		}
+		type defect struct {
+			Code  string `json:"code"`
+			Label string `json:"label"`
+			Order int    `json:"order"`
+		}
+		surfaces := []surface{}
+		for _, code := range catalog.Surfaces {
+			surfaces = append(surfaces, surface{code, formfields.SurfaceLabels[code]})
+		}
+		defects := []defect{}
+		for i, d := range catalog.DefectCategories {
+			defects = append(defects, defect{d.Code, d.Label, i + 1})
+		}
+		httpx.OK(c, struct {
+			formfields.FieldCatalog
+			Surfaces []surface `json:"surfaces"`
+			Defects  []defect  `json:"defect_categories"`
+		}{catalog, surfaces, defects})
 	})
 	templates := func(c *gin.Context) {
 		if e := httpx.Query(c); e != nil {
@@ -111,6 +151,8 @@ func Build(d Deps) *gin.Engine {
 	}
 	authed.GET("/form-templates", templates)
 	authed.GET("/form-templates/:id", templates)
-	// Ledger and parsing HTTP return in round two after contract acceptance.
+	ledger.Register(authed, d.UserStore.DB())
+	dictionary.RegisterDrawings(authed, d.UserStore.DB())
+	sample.Register(authed, d.UserStore.DB())
 	return r
 }

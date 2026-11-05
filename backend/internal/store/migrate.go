@@ -26,7 +26,7 @@ func Initialize(ctx context.Context, db *sqlx.DB, driver string) error {
 	if err != nil {
 		return err
 	}
-	if len(rows) == 7 {
+	if len(rows) == 8 {
 		return CheckReady(ctx, db, driver)
 	}
 	if len(rows) > 0 {
@@ -43,7 +43,7 @@ func Initialize(ctx context.Context, db *sqlx.DB, driver string) error {
 	if n != 0 {
 		return fmt.Errorf("initialize refuses unrecognized tables")
 	}
-	_, err = migrate(ctx, db, driver, 7, true)
+	_, err = migrate(ctx, db, driver, 8, true)
 	return err
 }
 func migrate(ctx context.Context, db *sqlx.DB, driver string, limit int, explicit bool, expectedData ...string) ([]string, error) {
@@ -141,20 +141,20 @@ func migrate(ctx context.Context, db *sqlx.DB, driver string, limit int, explici
 	if len(done) > 0 && len(done) < 6 {
 		return nil, fmt.Errorf("legacy versions before 0006 require a separate preservation analysis")
 	}
-	if applied[7] {
+	if applied[limit] {
 		return nil, tx.Commit()
 	}
-	if limit == 7 && !explicit {
+	if limit >= 7 && !explicit {
 		return nil, fmt.Errorf("explicit rebuild required")
 	}
-	if applied[6] && limit == 7 {
+	if applied[6] && !applied[7] && limit >= 7 {
 		if err = preflightTx(ctx, tx); err != nil {
 			return nil, err
 		}
 	}
 	before := ""
-	if limit == 7 {
-		if applied[6] {
+	if limit >= 7 {
+		if applied[6] && !applied[7] {
 			before, err = preservedDigest(ctx, tx, false)
 			if err != nil {
 				return nil, err
@@ -180,7 +180,7 @@ func migrate(ctx context.Context, db *sqlx.DB, driver string, limit int, explici
 		}
 		out = append(out, names[v])
 	}
-	if limit == 7 {
+	if limit >= 7 && !applied[7] {
 		definition, _ := json.Marshal(formfields.Catalog())
 		layout, _ := json.Marshal(formfields.Layout())
 		if _, err = tx.ExecContext(ctx, tx.Rebind(`INSERT INTO field_schemas VALUES(?,?)`), "2", string(definition)); err != nil {
@@ -204,8 +204,8 @@ func CheckReady(ctx context.Context, db *sqlx.DB, driver string) error {
 	if err != nil {
 		return err
 	}
-	if len(rows) != 7 {
-		return fmt.Errorf("expected schema 0007; use explicit initialization/rebuild")
+	if len(rows) != 8 {
+		return fmt.Errorf("expected schema 0008; use explicit initialization/rebuild/upgrade")
 	}
 	for i, m := range rows {
 		if m.Version != i+1 {
@@ -233,6 +233,16 @@ func CheckReady(ctx context.Context, db *sqlx.DB, driver string) error {
 	}
 	if n != 1 {
 		return fmt.Errorf("missing foundation singleton")
+	}
+	if err = db.GetContext(ctx, &n, `SELECT COUNT(*) FROM shared_catalog_state WHERE id=1`); err != nil || n != 1 {
+		return fmt.Errorf("missing shared catalog version")
+	}
+	for _, query := range []string{`SELECT paper_unit_text FROM submission_revisions LIMIT 0`, `SELECT is_rx FROM sample_drawings LIMIT 0`} {
+		rows, e := db.QueryxContext(ctx, query)
+		if e != nil {
+			return fmt.Errorf("incompatible business shape")
+		}
+		rows.Close()
 	}
 	for _, q := range []string{`SELECT department,account_type FROM users LIMIT 0`, `SELECT state,current_revision_id,last_saved_by FROM inspection_submissions LIMIT 0`, `SELECT content_json,content_schema_version,saved_actor_name FROM submission_revisions LIMIT 0`, `SELECT operation_label,created_by FROM operation_groups LIMIT 0`, `SELECT transaction_id,actor_name FROM business_events LIMIT 0`, `SELECT kind,direction,quantity,reason FROM quantity_changes LIMIT 0`, `SELECT operation_group_id,batch_key,submission_id FROM submission_slots LIMIT 0`, `SELECT fingerprint,response_status,response_body,expires_at FROM v2_idempotency_requests LIMIT 0`, `SELECT parser_version,dictionary_version,needs_review FROM sample_parse_cache LIMIT 0`, `SELECT code,name FROM units LIMIT 0`, `SELECT category,code,meta FROM dict_items LIMIT 0`, `SELECT schema_version,layout FROM form_templates LIMIT 0`} {
 		rows, e := db.QueryxContext(ctx, q)

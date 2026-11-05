@@ -20,6 +20,7 @@ type Snapshot struct {
 type Reader interface {
 	GetContext(context.Context, any, string, ...any) error
 	SelectContext(context.Context, any, string, ...any) error
+	QueryxContext(context.Context, string, ...any) (*sqlx.Rows, error)
 	Rebind(string) string
 }
 

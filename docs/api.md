@@ -138,7 +138,7 @@ derived.count_differences同样固定含三项键，每项 `{header_value,line_v
 
 lines[].seq必须正整数，版本内唯一；重复422 duplicate_line_seq。完整缺陷编码与顺序见[字段目录](fields.md#5-缺陷编码与顺序)，例如 `{"prick":{"concave":2,"convex":0,"both":null}}`。
 
-数量变化kind=LOSS/ADJUSTMENT/OTHER，direction=DECREASE/INCREASE/UNKNOWN；LOSS只能DECREASE且SAMPLING禁止LOSS。quantity可null，reason非空白必填；日期互斥，可均未知。修订数组完整替换，服务端生成条目id，只属于该版本。
+数量变化kind=LOSS/ADJUSTMENT/OTHER，direction=DECREASE/INCREASE/UNKNOWN；LOSS只能DECREASE且SAMPLING禁止LOSS。quantity可null，reason非空白必填；日期互斥，可均未知。修订数组完整替换，服务端生成条目id，只属于该版本。响应中的quantity_changes每项额外含只读id；它来自该版本的存储条目，不是可编辑内容，不写入content_json或改变已保存schema定义。请求携带id按未知字段400拒绝，原键重试保留原条目id。
 
 ### 2.3 计量单位
 
@@ -387,7 +387,7 @@ Drawing为 `{id,seq_no,drawing_no,project_code,model_code,spec_code,size_code,si
 
 `GET /form-fields` 无参数，200 data为 `{schema_version,fields,surfaces,defect_categories}`。fields每项 `{path,label,type,nullable,read_only,order}`，覆盖身份、纸面、样品、机台、计数、备注、变化及派生字段。数组路径用lines[].defects.prick.concave等，不混淆数据库扁平列名。
 
-surfaces固定按concave/convex/both排列，带中文名；defect_categories为35项code/label/order，顺序见字段目录。工序字段是身份引用，pass_rate是只读计算值，不能统称117个可写字段。
+surfaces为`{code,label}`数组，固定按concave/convex/both排列，中文名为凹面/凸面/双面；defect_categories为35项code/label/order，order从1开始，顺序见字段目录。工序字段是身份引用，pass_rate是只读计算值，不能统称117个可写字段。
 
 `GET /form-templates` 无参数，返回 `{items,total}`，每项 `{operation_id,operation_code,operation_label,template_version,schema_version,layout}`，列出启用工序。`GET /form-templates/{operation_id}` 返回单项，工序不存在404；存在但无专用布局使用通用布局。layout含字段分组顺序与完整字段路径，纸面栏目不能从模板遗漏。当前不通过模板强设业务必填，不建立类型不同的两套字段。历史版本取自身template_version解释，不按今天模板改写内容。
 

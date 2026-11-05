@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,7 +123,7 @@ func StorageError(err error) error {
 	if strings.Contains(s, "unique constraint") || strings.Contains(s, "duplicate key") {
 		return httpx.Conflict("唯一值冲突", map[string]string{"reason": "unique_conflict"})
 	}
-	if strings.Contains(s, "locked") || strings.Contains(s, "busy") || strings.Contains(s, "lock timeout") || strings.Contains(s, "connection refused") || errors.Is(err, context.DeadlineExceeded) {
+	if strings.Contains(s, "locked") || strings.Contains(s, "busy") || strings.Contains(s, "lock timeout") || strings.Contains(s, "connection refused") || strings.Contains(s, "database is closed") || errors.Is(err, driver.ErrBadConn) || errors.Is(err, context.DeadlineExceeded) {
 		return httpx.NewError(503, "temporarily_unavailable", "存储暂不可用", nil)
 	}
 	return fmt.Errorf("storage operation: %w", err)

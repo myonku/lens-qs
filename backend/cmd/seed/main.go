@@ -169,7 +169,8 @@ func applyDimensions(d *dictionary.Drawing, drawing string) {
 			v := tok
 			d.ModelCode = &v
 		case "RX":
-			d.IsRx = true
+			v := true
+			d.IsRx = &v
 		case "MONOC":
 			v := "MONOC"
 			d.ClassCode = &v
