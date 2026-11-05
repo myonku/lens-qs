@@ -1,6 +1,6 @@
 # 二次重建评估与实施计划
 
-评估日期：2026-11-05。代码基线：`13d1c05`。本文用于下一步实施，尚未执行清理、结构迁移、数据重置或业务重写。
+评估日期：2026-11-05。原评估代码基线：`13d1c05`。本文保留评估时的差异证据与两轮施工安排；其中“现有代码”“下一步”指该基线时点，不能作为当前完成状态。第一轮结果见 [G1 验收记录](rebuild-g1.md)，第二轮结果见 [G2 验收记录](rebuild-g2.md)。
 
 业务与接口依据为[需求](requirements.md)、[功能说明](features.md)、[字段目录](fields.md)、[系统设计](design.md)、[公共设计](common-design.md)、[API](api.md)及[参考资料](reference-data.md)。本文安排工程工作，不新增业务规则；遇到规格缺口须先确认，再同步规格和实施项。
 
@@ -36,13 +36,13 @@
 
 ## 3. 代码与规格差异清单
 
-“基础”项必须在第一轮处理或建立经过验证的底层支撑；“搭建”项在第二轮完成。关联工作包见第 6、7 节。
+“基础”项必须在第一轮处理或建立经过验证的底层支撑；“搭建”项在第二轮完成。关联工作包见第 6、7 节。表中已删除的旧源码路径保留为代码文字，可在原基线 `13d1c05` 中查阅；其余源码链接仅供定位路径，差异行为以原基线为准，不能把同名重写的现行实现当成旧证据。
 
 | 编号 | 代码证据与现状 | 目标与处置 | 所属工作包 |
 |---|---|---|---|
-| E-01 | [service.go](../backend/internal/ledger/service.go) 的 createSubmission/saveDraft/submissionAction 和 [0005](../backend/migrations/sqlite/0005_v2.sqlite.up.sql)：DRAFT/PUBLISHED、双指针、发布时原地更新版本 | 基础：改为 ACTIVE/CANCELLED、唯一当前指针、不可变保存版本；彻底退出发布分支 | A-02、A-03、A-05、B-01 |
+| E-01 | `internal/ledger/service.go` 的 createSubmission/saveDraft/submissionAction 和 [0005](../backend/migrations/sqlite/0005_v2.sqlite.up.sql)：DRAFT/PUBLISHED、双指针、发布时原地更新版本 | 基础：改为 ACTIVE/CANCELLED、唯一当前指针、不可变保存版本；彻底退出发布分支 | A-02、A-03、A-05、B-01 |
 | E-02 | [http.go](../backend/internal/ledger/http.go) 注册 PATCH `/draft` 与 POST `/publish`；响应含 current/draft 两套内容，直接输出数据库 map | 基础/搭建：明确请求/响应类型；按契约 PATCH 单据、返回 revision/derived/issues；旧路径不留兼容别名 | A-02、A-05、B-01 |
-| E-03 | [content.go](../backend/internal/ledger/content.go) 保留 declared_counts、paper_submitted_raw/paper_inspected_raw；derived 输出 declared_differences 与标量 line_totals | 基础：删除独立声明及日期原文入口；保留表头唯一统计来源；核对结果改为契约结构，禁止派生字段进入内容 | A-02、A-03 |
+| E-03 | `internal/ledger/content.go` 保留 declared_counts、paper_submitted_raw/paper_inspected_raw；derived 输出 declared_differences 与标量 line_totals | 基础：删除独立声明及日期原文入口；保留表头唯一统计来源；核对结果改为契约结构，禁止派生字段进入内容 | A-02、A-03 |
 | E-04 | content 的单位只有字符串类型检查；[字典路由](../backend/internal/dictionary/http/http.go) 可 POST `/units`；[用户](../backend/internal/users/store.go) 使用 unit_id | 基础：固定 PIECE/片只读目录；单位合并后严格验证；department 与计量目录分离 | A-02、A-03、A-04 |
 | E-05 | mergeContent 不按类型拒绝 LOSS；[query.go](../backend/internal/ledger/query.go) 的 changeStats 仅在汇总时排除抽检 LOSS | 基础：单笔、补丁、批量在写服务统一硬拒绝；移除“允许存但不计”的新写入路径 | A-02、B-01 |
 | E-06 | groupAction 关闭组前检查 DRAFT 并返回 unfinished_submissions | 搭建：关闭只限制新增/绑定，不检查完整度，也不禁止已有单更正和取消 | A-05、B-01 |
@@ -52,11 +52,11 @@
 | E-10 | aggregate 虽已使用表头 counts 且保留未知，但只检查合计分子；无单据不返回 no_records；数量变化缺完整数值结构；统计无事件上界/分组分页 | 基础：复用未知量思想，重做统一可比性规则；搭建：补齐响应与分页，不让合计掩盖单张异常 | A-02、B-03 |
 | E-11 | ledger 路由没有 `/stats/dimensions`、`/stats/workload`；auditList 仅实体条件；报告进度仍统计草稿/发布 | 搭建：完整实现维度、两类工作量、审计筛选、有效/取消/缺项进度，复用同一版本集合 | B-03、B-04 |
 | E-12 | [dictionary/store.go](../backend/internal/dictionary/store.go) 同时支持 process/inspection_operation；meta 为字符串；图号查询默认最多 500，匹配 LIMIT 1；UpsertDrawings 逐笔非事务；导入接受 rows 并跳坏行 | 基础/搭建：规范目录数据及类型，工序只用 inspection_operation；原子结构化导入、分页、多候选，不静默截断/跳过 | A-03、A-04、B-05 |
-| E-13 | [sample/http](../backend/internal/sample/http/http.go) 的 GET cache 调用 Parse 写缓存；[sample/service.go](../backend/internal/sample/service.go) trim 原文并可能回显缓存旧原文；缺解析器/目录版本与确认防覆盖协议；is_rx 是非空 bool | 基础：定义可空结果与缓存元数据；搭建：只读 cache、当前原文回显、候选与确认完整映射、版本失效和并发防覆盖 | A-02、A-03、B-05 |
+| E-13 | `internal/sample/http/http.go` 的 GET cache 调用 Parse 写缓存；[sample/service.go](../backend/internal/sample/service.go) trim 原文并可能回显缓存旧原文；缺解析器/目录版本与确认防覆盖协议；is_rx 是非空 bool | 基础：定义可空结果与缓存元数据；搭建：只读 cache、当前原文回显、候选与确认完整映射、版本失效和并发防覆盖 | A-02、A-03、B-05 |
 | E-14 | [auth](../backend/internal/auth/service.go) 登录停用/锁定返回 403 且区分原因，改密最低 6 位；[middleware](../backend/internal/middleware/middleware.go) 静默优先 Cookie，允许 X-Auth-Token，缺 Cookie 写来源校验；[users](../backend/internal/users/store.go) PATCH 指针不区分 null 清除 | 基础：按现有契约统一认证、授权、错误与三态更新；保留旧哈希登录能力；补最后管理员与事务审计等约束 | A-02、A-04、A-05 |
 | E-15 | [0006](../backend/migrations/sqlite/0006_v2_release.sqlite.up.sql) 删除旧表及部分日志并建立旧回放基线；[migrate.go](../backend/internal/store/migrate.go) 以版本号跳过，无内容核验/迁移互斥；status 会建迁移表 | 基础：旧迁移不改写，新增受控重建迁移和只读预检；重建后不沿用旧历史起点；实际库版本先盘点 | A-01、A-03、A-06 |
 | E-16 | [容器入口](../backend/docker-entrypoint.sh) 每次迁移/默认种子；[dev.ps1](../backend/scripts/dev.ps1) 带迁移、种子、可选重置，输出管理员密码/DSN；Compose/脚本存在固定引导凭据；[server](../backend/internal/server/server.go) healthz 恒成功 | 基础：拆开启动/初始化/重置入口、保护配置和密码；搭建：依赖检查、部署及备份演练 | A-06、B-06 |
-| E-17 | [台账测试](../backend/internal/ledger/acceptance_test.go)、[release_test](../backend/internal/ledger/release_test.go)、[invariants_test](../backend/internal/ledger/invariants_test.go) 混合有效防重/回滚断言和旧发布/单位/抽检断言 | 基础/搭建：逐条分类迁移，保留有价值的并发/回滚案例，替换错误期望；以 AC-01～26 建立覆盖清单 | A-01、A-07、全部 B 包 |
+| E-17 | `internal/ledger/acceptance_test.go`、`internal/ledger/release_test.go`、`internal/ledger/invariants_test.go` 混合有效防重/回滚断言和旧发布/单位/抽检断言 | 基础/搭建：逐条分类迁移，保留有价值的并发/回滚案例，替换错误期望；以 AC-01～26 建立覆盖清单 | A-01、A-07、全部 B 包 |
 
 另两项需要在重构时一并验证：integer 的 json.Number 分支仅检查 int64，没有统一契约安全整数上界；数量累计也需防溢出。多数数据库异常目前统一变成 503，应区分预期冲突、暂不可用和内部错误，避免以重试掩盖实现缺陷。
 
@@ -307,4 +307,4 @@ G2 完成后方可做正式切换准备；部署位置、可信来源/代理、R
 - G2 前的部署参数：实际目标、停写窗口、可信代理/来源、恢复指标及质量记录保留期；未定时不自动清除真实记录。
 - 后续低优先级文件能力：格式、规模、打印布局及导入身份映射单独定稿。
 
-下一步从 **A-01** 开始，先固定验收与库副本保全证据，再进入底层清理；本计划不要求重新讨论已经确认的 v2 规则。
+以上为原定实施顺序；当前交付状态以 G1/G2 验收记录为准，不重新从 A-01 开始。用户已明确本次仅作开发交付，不作部署设计，部署参数在后续切换工作中确定；这不免除开发环境中的双库、备份恢复、安全与运行验证。

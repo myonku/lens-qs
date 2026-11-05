@@ -43,7 +43,7 @@ Cookie 默认 sid、HttpOnly、Path=/、SameSite=Lax，HTTPS 使用 Secure；也
 
 参数不得重复；group_by 使用单个逗号分隔字符串，不能重复参数名。未知字段/查询参数400并指出 path/parameter。GET 不接受请求正文。字段表中的省略表示默认或保持，null 只在明确可空处允许。
 
-列表按 created_at DESC,id DESC；内容版本按 revision_no DESC；审计按 event_id DESC；目录按 sort_no ASC,code ASC。统计分组按维度值稳定升序，null 排最后。客户端不能传任意 SQL sort 表达式。
+列表按 created_at DESC,id DESC；内容版本按 revision_no DESC；审计按 event_id DESC；目录按 sort_no ASC,code ASC。统计分组按维度值稳定升序，null 排最后。客户端不能传任意 SQL sort 表达式。台账与参考图号的 keyword 是按原大小写的文字包含匹配，不解释为通配表达式，两库语义一致。
 
 ### 1.3 写入幂等与并发
 
