@@ -1,65 +1,27 @@
-# lens-qs 后端 v2
+# 后端工程
 
-Go 1.26+，Gin/sqlx，SQLite及PostgreSQL。SQLite连接默认内存临时存储，避免Windows临时文件创建失败。所有API前缀 `/api/v2`，健康检查 `/healthz`，根路径显示2.0.0。接口详见[正式契约](../docs/api.md)。
+本目录是现有Go工程。v2的业务与接口目标由[需求](../docs/requirements.md)、[系统设计](../docs/design.md)和[API](../docs/api.md)定义；现有实现可能滞后，不能以代码行为补充或覆盖文档规则。本轮仅整理文档，未验证运行、结构迁移或部署。
+
+## 本地开发命令
+
+以下是工程入口备忘，在backend目录、隔离的开发数据库上使用；不是部署或数据升级方案。
 
 ```powershell
-Copy-Item .env.example .env  # 首次建立配置；已有.env不要覆盖
-go run ./cmd/migrate
-go run ./cmd/seed -skip-migrate
+Copy-Item .env.example .env  # 仅首次配置，已有文件不要覆盖
+# 配置隔离开发库后，再选择执行结构迁移和参考资料初始化
+# go run ./cmd/migrate
+# go run ./cmd/seed -skip-migrate
 go run ./cmd/api
 ```
 
-已有账户和密码保持，空用户库才按BOOTSTRAP_ADMIN_USER/PASS建立管理员。创建抽检账户：
+数据库结构和工具适配须依据目标设计单独核验，不根据文档版本假定现有迁移已完成。账户、密码及检验历史需保全，业务数据不随服务启动清空。
+
+## 工程检查
 
 ```powershell
-go run ./cmd/createuser -username sampler -password '<your-password>' -account-type SAMPLING
-```
-
-管理员也可通过POST /api/v2/users或PATCH /api/v2/users/{id}维护account_type。NORMAL/SAMPLING是填报权限，is_admin是账户管理权限，二者独立。前端使用登录/me的submission_inspection_kind固定填报标记；服务端对目标组/单逐笔校验。修改账户类型使该用户会话及幂等缓存失效。
-
-报告：
-
-- `GET /api/v2/reports/product-lots/{id}?as_of=<RFC3339-seconds>&through_event_id=<optional>`：系统时点全工序状态/数据/良率，事件序号可固定同秒视图。
-- `GET /api/v2/reports/operations/{operation_id}?from=2026-11-01&to=2026-11-30&product_lot_id=<optional>`：工序范围明细与完整筛选范围小计。
-
-默认NORMAL，SAMPLING单独查询，ALL分类型。时点报告不混入后续修订；范围报告分页不截断小计。
-
-旧测试数据可清除，但必须先备份停写：
-
-```powershell
-go run ./cmd/migrate                         # 0006删除旧业务表
-go run ./cmd/reset-testdata -confirm-test-data # 只在v2内容全为测试时执行
-```
-
-保留账户密码与字典，清理后需重新登录。没有旧接口别名、旧按号upsert、旧迁移导入命令或双域开关。迁移不可恢复旧业务数据，详见[切换说明](../docs/migration.md)。
-
-```powershell
-go test -race ./...
+go test ./...
 go vet ./...
 go build ./...
-# 指向可创建随机schema的隔离PostgreSQL测试库
-go test -race ./internal/ledger -count=1 # 先设置 LENS_TEST_POSTGRES_DSN 才启用PostgreSQL用例
 ```
 
-容器：`docker compose up -d --build`。可用 `docker build --build-arg GOPROXY=https://goproxy.cn -t lens-qs:v2 .` 选择构建代理。镜像只带CSV参考资料，不包含本地库/备份/.env，重启不会重设已有管理员密码。
-
-## 配置与联调
-
-以下命令和相对路径均以 `backend` 为工作目录。真实环境变量优先于 `.env`；首次复制示例配置后确认数据库、监听、来源和引导账户，示例密码不作为部署凭据。
-
-| 变量 | 默认 | 用途 |
-|---|---|---|
-| APP_ENV / APP_ADDR | dev / :8080 | 运行环境与监听地址 |
-| DB_DRIVER / DB_DSN | sqlite / ./data/lens.db | sqlite文件或postgres连接串 |
-| AUTO_MIGRATE | false | API启动自动迁移；生产应明确选择执行方式 |
-| SESSION_TTL / SESSION_IDLE_TTL | 12h / 2h | 绝对到期与空闲到期 |
-| MAX_LOGIN_FAIL / LOCK_DURATION | 5 / 10m | 连续失败账户锁定 |
-| COOKIE_NAME / COOKIE_SECURE | sid / false | Cookie名称，HTTPS环境启用Secure |
-| CORS_ORIGINS | 空 | 允许的来源，逗号分隔；空值不下发CORS头 |
-| BOOTSTRAP_ADMIN_USER / BOOTSTRAP_ADMIN_PASS | 空 | 仅空用户库引导管理员 |
-
-浏览器Cookie联调需要配置允许来源并开启 `credentials: 'include'` 或 withCredentials。SameSite=Lax的跨站限制独立于CORS；跨站部署可采用Bearer，令牌须作为凭据保护。检验写入还需允许 `X-Idempotency-Key` 请求头，读取回放/排障头时应验证浏览器可见性。具体CORS头暴露和令牌并存优先规则列为独立核验事项。
-
-密码采用Argon2id，令牌仅存哈希。改密成功后重新登录；停用、重置密码和类型变更须撤销会话。运行日志、配置和备份不得泄露凭据。数据库每日备份并保留30天、恢复演练与性能目标是部署验收项，不能由服务可启动推定通过；详见公共设计。
-
-本地脚本 `pwsh -File scripts/dev.ps1 -NoWait`；可选 `-ResetTestData`显式清测试业务并保留账户，旧删库 `-Reset` 已移除。CI覆盖SQLite和PostgreSQL，交付边界见[交付状态](../docs/progress.md)，认证、字典、解析与安全约定见[公共设计](../docs/common-design.md)。
+这些命令通过只说明相应工程检查结果；业务验收仍须覆盖需求中的保存即生效、固定“片”单位、抽检LOSS拒绝及独立工序填报等规则。安全、会话、双库一致性、备份和性能要求见[公共设计](../docs/common-design.md)。
