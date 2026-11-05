@@ -2,6 +2,7 @@
 package authhttp
 
 import (
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -71,6 +72,11 @@ func (h *Handler) login(c *gin.Context) {
 }
 
 func (h *Handler) logout(c *gin.Context) {
+	raw, e := io.ReadAll(io.LimitReader(c.Request.Body, 1))
+	if e != nil || len(raw) > 0 {
+		httpx.Fail(c, httpx.BadRequest("退出接口不接受正文"))
+		return
+	}
 	token := middleware.TokenFromRequest(c, h.cookieName)
 	if err := h.svc.Logout(c.Request.Context(), token); err != nil {
 		httpx.Fail(c, err)
@@ -134,10 +140,10 @@ type createUserReq struct {
 	AccountType httpx.Optional[string] `json:"account_type"`
 	Username    string                 `json:"username" binding:"required"`
 	Password    string                 `json:"password" binding:"required"`
-	DisplayName string                 `json:"display_name"`
-	EmployeeNo  string                 `json:"employee_no"`
-	Department  string                 `json:"department"`
-	IsAdmin     bool                   `json:"is_admin"`
+	DisplayName httpx.Optional[string] `json:"display_name"`
+	EmployeeNo  *string                `json:"employee_no"`
+	Department  *string                `json:"department"`
+	IsAdmin     httpx.Optional[bool]   `json:"is_admin"`
 }
 
 func (h *Handler) createUser(c *gin.Context) {
@@ -145,6 +151,24 @@ func (h *Handler) createUser(c *gin.Context) {
 	if err := httpx.BindJSON(c, &req); err != nil {
 		httpx.Fail(c, err)
 		return
+	}
+	if req.DisplayName.Set && req.DisplayName.Value == nil || req.IsAdmin.Set && req.IsAdmin.Value == nil {
+		httpx.Fail(c, httpx.BadRequest("display_name/is_admin cannot be null"))
+		return
+	}
+	name := ""
+	admin := false
+	if req.DisplayName.Value != nil {
+		name = *req.DisplayName.Value
+	}
+	if req.IsAdmin.Value != nil {
+		admin = *req.IsAdmin.Value
+	}
+	nullable := func(value *string) *string {
+		if value == nil {
+			return nil
+		}
+		return optString(*value)
 	}
 	accountType := "NORMAL"
 	if req.AccountType.Set {
@@ -162,10 +186,10 @@ func (h *Handler) createUser(c *gin.Context) {
 		AccountType:   accountType,
 		Username:      req.Username,
 		Password:      req.Password,
-		DisplayName:   req.DisplayName,
-		EmployeeNo:    optString(req.EmployeeNo),
-		Department:    optString(req.Department),
-		IsAdmin:       req.IsAdmin,
+		DisplayName:   name,
+		EmployeeNo:    nullable(req.EmployeeNo),
+		Department:    nullable(req.Department),
+		IsAdmin:       admin,
 		MustChangePwd: false,
 	})
 	if err != nil {

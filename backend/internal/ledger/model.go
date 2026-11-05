@@ -95,6 +95,18 @@ func Merge(base Content, raw []byte, kind string) (Content, error) {
 		if (key == "lines" || key == "quantity_changes") && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 			return Content{}, httpx.BadRequest(key + " must be an array")
 		}
+		if key == "lines" || key == "quantity_changes" {
+			var items []json.RawMessage
+			if e := json.Unmarshal(value, &items); e != nil {
+				return Content{}, httpx.BadRequest(key + " must be an array")
+			}
+			for i, item := range items {
+				trim := bytes.TrimSpace(item)
+				if len(trim) == 0 || trim[0] != '{' {
+					return Content{}, httpx.BadRequest("数组元素必须是对象", map[string]any{"path": fmt.Sprintf("%s[%d]", key, i)})
+				}
+			}
+		}
 		if key == "counts" && !bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 			var old, part map[string]json.RawMessage
 			_ = json.Unmarshal(values[key], &old)

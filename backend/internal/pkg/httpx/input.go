@@ -89,13 +89,13 @@ func Query(c *gin.Context, names ...string) error {
 func Pagination(c *gin.Context) (int, int, error) {
 	p, s := 1, 20
 	var e error
-	if v, ok := c.GetQuery("page"); ok {
+	if v := c.Query("page"); c.Request.URL.Query().Has("page") {
 		p, e = strconv.Atoi(v)
 		if e != nil || p < 1 || p > 100000000 {
 			return 0, 0, BadRequest("非法 page")
 		}
 	}
-	if v, ok := c.GetQuery("page_size"); ok {
+	if v := c.Query("page_size"); c.Request.URL.Query().Has("page_size") {
 		s, e = strconv.Atoi(v)
 		if e != nil || s < 1 || s > 100 {
 			return 0, 0, BadRequest("非法 page_size")

@@ -136,7 +136,10 @@ func ImportDrawings(ctx context.Context, db *sqlx.DB, items []DrawingInput) (int
 	// Validate the whole request before touching rows; unique seq numbers may be
 	// exchanged within this import, so release only those rows inside the transaction.
 	for i, in := range items {
-		if strings.TrimSpace(in.DrawingNo) == "" || seen[in.DrawingNo] || in.Active.Set && in.Active.Value == nil {
+		if in.Active.Set && in.Active.Value == nil {
+			return 0, 0, httpx.BadRequest("active cannot be null", gin.H{"index": i})
+		}
+		if strings.TrimSpace(in.DrawingNo) == "" || seen[in.DrawingNo] {
 			return 0, 0, httpx.Validation("非法或重复图号", gin.H{"reason": "invalid_drawing", "index": i})
 		}
 		seen[in.DrawingNo] = true

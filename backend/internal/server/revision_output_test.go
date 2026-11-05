@@ -29,7 +29,7 @@ func TestG2QuantityChangeEvidenceIDs(t *testing.T) {
 		t.Fatal("missing evidence IDs", out)
 	}
 	replay := f.request("POST", "/api/v2/submissions", body, f.token, "change-evidence", 201)
-	if string(replay.Data) != string(first.Data) {
+	if !replay.Replay || first.Replay || string(replay.Data) != string(first.Data) {
 		t.Fatal("replay lost evidence IDs")
 	}
 	get := f.call("GET", "/submissions/"+out.Submission.ID, "", 200)

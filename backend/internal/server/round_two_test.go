@@ -30,6 +30,7 @@ type apiFixture struct {
 	n                    int
 }
 type apiResponse struct {
+	Replay  bool            `json:"-"`
 	Code    string          `json:"code"`
 	Data    json.RawMessage `json:"data"`
 	Details map[string]any  `json:"details"`
@@ -90,6 +91,7 @@ func (f *apiFixture) request(method, path, body, token, key string, status int) 
 	}
 	var r apiResponse
 	decode(f.t, w.Body.Bytes(), &r)
+	r.Replay = w.Header().Get("X-Idempotent-Replay") == "true"
 	return r
 }
 func (f *apiFixture) call(method, path, body string, status int) apiResponse {

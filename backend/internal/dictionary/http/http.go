@@ -59,12 +59,12 @@ func (h *Handler) units(c *gin.Context) {
 }
 
 type itemReq struct {
-	Category string          `json:"category" binding:"required"`
-	Code     string          `json:"code" binding:"required"`
-	Label    string          `json:"label"`
-	SortNo   int             `json:"sort_no"`
-	Active   *bool           `json:"active"`
-	Meta     json.RawMessage `json:"meta"`
+	Category string                 `json:"category" binding:"required"`
+	Code     string                 `json:"code" binding:"required"`
+	Label    httpx.Optional[string] `json:"label"`
+	SortNo   httpx.Optional[int]    `json:"sort_no"`
+	Active   httpx.Optional[bool]   `json:"active"`
+	Meta     json.RawMessage        `json:"meta"`
 }
 
 func (h *Handler) upsert(c *gin.Context) {
@@ -74,15 +74,27 @@ func (h *Handler) upsert(c *gin.Context) {
 		return
 	}
 	active := true
-	if req.Active != nil {
-		active = *req.Active
+	if req.Label.Set && req.Label.Value == nil || req.SortNo.Set && req.SortNo.Value == nil || req.Active.Set && req.Active.Value == nil {
+		httpx.Fail(c, httpx.BadRequest("label/sort_no/active cannot be null"))
+		return
+	}
+	label := ""
+	sortNo := 0
+	if req.Label.Value != nil {
+		label = *req.Label.Value
+	}
+	if req.SortNo.Value != nil {
+		sortNo = *req.SortNo.Value
+	}
+	if req.Active.Value != nil {
+		active = *req.Active.Value
 	}
 	var meta *string
 	if len(req.Meta) > 0 && string(req.Meta) != "null" {
 		v := string(req.Meta)
 		meta = &v
 	}
-	it, e := h.store.UpsertItem(c.Request.Context(), &dictionary.Item{Category: req.Category, Code: req.Code, Label: req.Label, SortNo: req.SortNo, Active: active, Meta: meta})
+	it, e := h.store.UpsertItem(c.Request.Context(), &dictionary.Item{Category: req.Category, Code: req.Code, Label: label, SortNo: sortNo, Active: active, Meta: meta})
 	if e != nil {
 		httpx.Fail(c, e)
 		return
