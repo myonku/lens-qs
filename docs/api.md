@@ -1,8 +1,8 @@
 # 无纸化检验台账 — v2 接口契约
 
-版本：2.0.0。日期：2026-11-04。正式 v2 契约；旧 `/api/*` 路径已移除，无兼容别名。
+版本：2.0.0。文档修订：2026-11-05。正式 v2 契约；旧 `/api/*` 路径已移除，无兼容别名。
 
-依据：[需求](requirements.md)、[设计](design.md)。阶段与验收证据统一见[项目进度](progress.md)。归档仅供历史追溯，不用于前端对接。
+依据：[需求](requirements.md)、[领域设计](design.md)及[公共设计](common-design.md)。本文独立描述 v2 对接契约。尚未有统一文档依据的共享接口边界明确列为待核验，不套用业务接口约定。
 
 ## 1. 通用约定
 
@@ -14,13 +14,13 @@
 
 account_type 决定填报 inspection_kind，is_admin 不提供越类型业务权限。两类均可读取；组/单的创建、绑定、保存、发布、取消、关闭/开放只能操作本账户类型。省略标记由后端补齐，显式对立标记或目标归属不符返回403，details.reason=inspection_kind_forbidden。前端读取登录/me 的 submission_inspection_kind 固定全部填报的标记，不提供普通切换。
 
-字典 `/dict/items`、单位 `/units`、参考部件号 `/dict/drawings`、样品 `/sample/parse`、`/sample/confirm`、`/sample/cache` 均在同一 v2 前缀下。工序引用已有稳定字典 ID；样品解析不能替代完整产品批身份。旧 sample/pending 移除，用 submissions 列表补填。具体字典字段为 category/code/label/sort_no/active/meta，单位 code/name/sort_no/active；响应保留其ID。
+字典 `/dict/items`、单位 `/units`、参考部件号 `/dict/drawings`、样品 `/sample/parse`、`/sample/confirm`、`/sample/cache` 均在同一 v2 前缀下。工序引用已有稳定字典 ID；样品解析不能替代完整产品批身份。使用 submissions 列表补填资料；解析缓存不充当检验单清单。具体字典字段为 category/code/label/sort_no/active/meta，单位 code/name/sort_no/active；响应保留其ID。
 
 ### 1.2 响应、分页及错误
 
-成功：`{"code":"ok","message":"","data":{...}}`。新建 201，查询/修改/动作 200。失败：`{"code":"conflict","message":"...","details":{...}}`。
+成功：`{"code":"ok","message":"","data":{...}}`。检验业务新建 201，查询/修改/动作 200；共享目录的按编码维护接口可返回200，不按新建业务资源推定状态码。失败：`{"code":"conflict","message":"...","details":{...}}`。
 
-检验业务与用户分页列表采用 `page=1&page_size=20`，page_size 范围1–100，响应data为 `{items,total,page,page_size}`，空items为 `[]`；字典和目录接口按各自结构返回，不统一承诺分页。检验业务查询对未列明或重复参数返回400，未知请求字段返回400；共享管理接口的查询参数按各端点约定。
+检验业务分页采用 `page=1&page_size=20`，page_size 范围1–100，响应data为 `{items,total,page,page_size}`，空items为 `[]`。用户列表也采用分页结构，但其上限和非法参数处理须单独核验，不能套用业务的1–100限制；字典和目录按各自结构返回，不统一承诺分页。检验业务查询对未列明或重复参数返回400，未知请求字段返回400；共享管理接口的查询参数按各端点约定。
 
 | HTTP | code | 场景 |
 |---|---|---|
@@ -31,7 +31,7 @@ account_type 决定填报 inspection_kind，is_admin 不提供越类型业务权
 | 422 | `validation_failed` | 负数、非法规范日期、事件日期/时点同时非空、发布前未归组等 |
 | 503 | `temporarily_unavailable` | 有界等待后数据库忙/存储不可用；不得继续写业务 |
 
-409 的 `details.reason` 为可编程分支，中文 message 供展示。普通缺项、参考清单不匹配、多缺陷重复计数以及待定的单批数量算式使用 `issues` 警告。v2 不接收旧 `enforce/mode/expected_save_count`，硬性约束不能降级警告。
+409 的 `details.reason` 为可编程分支，中文 message 供展示。普通缺项、多缺陷重复计数以及待定的单批数量算式使用 `issues` 警告。参考清单不匹配通过解析响应的匹配结果及说明提示，不保证保存接口生成同名 issue。硬性约束不能通过请求参数降级为警告。
 
 ### 1.3 幂等、并发及批量
 
@@ -40,6 +40,45 @@ account_type 决定填报 inspection_kind，is_admin 不提供越类型业务权
 更新既有对象必须有正文 `expected_version`；不匹配 409 `version_conflict`，返回 current_version 和对象 ID。幂等回放先执行，不因上次成功推进 version 而报冲突。成功结果与业务写入同事务；失败整笔回滚。修正请求内容使用新键；503/断线后可原键原文重试。并发同键处理中返回 409 `request_in_progress` 或有界等待后回放。
 
 单据 `version` 与内容版本 `revision_no` 不同：发布、取消也推进 version。PATCH 保存追加完整内容快照，不能原地改历史。批量键属于整个 HTTP 请求，任一项失败全部回滚。
+
+### 1.4 会话和浏览器调用
+
+除 `POST /auth/login`、根信息 `/` 和 `/healthz` 外，接口需登录。根信息与健康检查不使用 code/message/data 包装；其余失败不返回成功 data，details 可省略。未分类内部错误为500 `internal_error`，不暴露 SQL、凭据或内部堆栈。
+
+Cookie 调用使用 `credentials: 'include'`（axios 为 withCredentials）；Bearer 调用使用 `Authorization: Bearer <token>`。Cookie 默认为 sid、HttpOnly、Path=/、SameSite=Lax，HTTPS 环境启用 Secure。跨站 Cookie 是否可用取决于 SameSite 和浏览器策略；CORS 放行不代表跨站 Cookie 自动生效。默认会话绝对有效期12h、空闲2h失效；配置见[运行说明](../backend/README.md)。
+
+logout 撤销当前会话并清 Cookie；change-password 成功后撤销本人全部会话，需重新登录。用户停用、管理员重置密码也须撤销该用户会话；类型变更另清其业务幂等缓存。is_admin 与 account_type 均不能由用户自助改密接口改变。用户管理 PATCH 不接收 username 改名字段，不与新建字段表混用。
+
+`X-Request-Id` 是排障关联信息，不作为 `X-Idempotency-Key`；幂等回放仍须具有有效认证。Cookie/Bearer 同时提交不同令牌的优先规则、密码强度、首次强制改密和共享接口分页的精确边界需单独核验，见公共设计待核验表。
+
+### 1.5 共享目录与解析接口
+
+本节路径加 `/api/v2`，均需登录。用户管理需管理员；字典、单位、参考资料和解析目前不按 NORMAL/SAMPLING 分设副本。共享管理写入不适用 §1.3 的检验业务强制幂等/expected_version 协议，不能把业务补丁的 null 规则推广到这些端点。
+
+| 方法 | 路径 | 输入与用途 |
+|---|---|---|
+| GET | `/dict/categories` | 字典类别目录 |
+| GET | `/dict/items` | category 可筛类别，include_inactive=true 包含停用；返回 items/total |
+| POST | `/dict/items` | category/code 必填，label/sort_no/active/meta 可选；按 category+code 维护 |
+| PATCH | `/dict/items/{id}` | 按稳定 ID 维护标签、排序、启停及元信息 |
+| GET/POST | `/units` | 查询清单/按 code 维护单位，写入 code/name/sort_no/active |
+| GET | `/dict/drawings` | spec/size/side/model 筛选辅助参考资料，不是生产批查询 |
+| POST | `/dict/drawings/import` | 参考资料批量维护，items 或制表符 rows；不是检验业务导入 |
+| POST | `/sample/parse` | 正文 sample_raw，可空；返回 parsed/drawing/matched/from_cache/note 及可选 unmatched_reason |
+| POST | `/sample/confirm` | sample_raw 必填；project/model/spec/size/side/class/is_rx 为人工确认项，保存至解析缓存 |
+| GET | `/sample/cache` | sample_raw 查询参数必填；返回 normalized_key/from_cache/tokens/unknown_tokens |
+
+字典读出的 meta 可为 JSON 文本字符串；不能假定总是对象。类别与 code 是标识，label 是展示值，停用不修改已经保存的内容版本。目录的排序和资料数量不构成生产流程门槛，参考清单缺项不能拦截填报。
+
+parse 的 parsed 含 raw、核心五项 project/model/spec/size/side、参考属性 class/is_rx、tokens/unknown_tokens/confidence；未知项保持未知。unmatched_reason 为 raw_only/partial/no_drawing，匹配失败仍是成功的辅助解析响应。置信度与良率无关，不依赖固定数值作业务准入判断。
+
+confirm 示例：
+
+```json
+{"sample_raw":"M2 S2 ND2 SMR","project":"M2","model":"VID2","spec":"S2","size":"SM","side":"R"}
+```
+
+这只确认辅助结构化结果，不改写 sample_raw，不自动创建产品批、更新检验单或追溯修改历史内容。调用方须明确将选定字段写入产品批/草稿。parse 可以复用缓存，不能当作完全无持久化副作用的接口。字段目录与版本化模板见 §3；缺陷编码完整清单见 §2.6。
 
 ## 2. 字段与时间契约
 
@@ -71,7 +110,6 @@ PATCH 未归组草稿时不传 batch_no 表示保持原值，显式 null 表示�
 | `machine_no` | string/null，本批固定机台号，可复用，不代替批号 |
 | `paper_submitted_date/paper_inspected_date` | 规范日期 string/null |
 | `paper_submitted_at/paper_inspected_at` | 规范准确时点 string/null |
-| `paper_submitted_raw/paper_inspected_raw` | 原始日期文字 string/null；保留证据，不用于日期筛选 |
 | `sample_raw` | string/null，本次样品原文，辅助解析不可改写；正式版本保存当时原文快照 |
 | `sample_project/sample_model/sample_spec/sample_size/sample_side` | string/null，解析/人工录入的五个核心项；不改变产品批身份 |
 | `counts` | `{total_qty,qualified_qty,defect_qty}`，每项为非负整数/null，唯一正式计数源 |
@@ -80,18 +118,19 @@ PATCH 未归组草稿时不传 batch_no 表示保持原值，显式 null 表示�
 | `quantity_changes` | 数组；见 §2.5 |
 | `remark` | string/null |
 
-`counts:null` 清三项；`counts:{}` 不改；对象内不传保持、null 清空；`lines/quantity_changes` 不传保持，传数组整组替换，`[]` 清空、null 报 400。数组元素是完整新行，遗漏格子为未知，不继承旧行。`defects` 嵌套 `{类别:{concave,convex,both}}`，每格为非负整数/null，省略格子为未知；没有旧版“null 清零”语义，明确零必须传 0。
+`counts:null` 清三项；`counts:{}` 不改；对象内不传保持、null 清空；`lines/quantity_changes` 不传保持，传数组整组替换，`[]` 清空、null 报 400。数组元素是完整新行，遗漏格子为未知，不继承旧行。`defects` 嵌套 `{类别:{concave,convex,both}}`，每格为非负整数/null，省略格子为未知；明确零必须传 0。
 
-只读派生项：`pass_rate, line_totals, declared_differences, is_complete, missing_fields, paper_submitted_day, paper_inspected_day`。服务端不按某次表头是否出现来切换计数来源。系统操作者/创建发布取消时间只从会话和服务器写，不接受客户端提交。v2 单位字段仅用 paper_unit_*，无旧 unit_* 别名。
+只读派生项：`pass_rate, line_totals, declared_differences, is_complete, missing_fields, paper_submitted_day, paper_inspected_day`。服务端不按某次表头是否出现来切换计数来源。系统操作者/创建发布取消时间只从会话和服务器写，不接受客户端提交。单位字段仅用 paper_unit_*。
 
-### 2.4 日期/时间仍存字符串
+### 2.4 规范日期与时点
 
 | 类型 | 合法示例 | 规则 |
 |---|---|---|
 | 日期 | `2026-11-03` | YYYY-MM-DD，真实公历日期；不补造时刻 |
 | 准确时点输入 | `2026-11-03T00:30:00+08:00` | RFC3339 秒精度，必须带 Z 或偏移 |
 | 准确时点存储/输出 | `2026-11-02T16:30:00Z` | UTC 固定秒精度 TEXT |
-| 原文 | `2026.11.3` | 仅放 *_raw，不冒充标准字段 |
+
+日期由前端日期/时间选择组件产生，接口只接收规范日期或带时区时点，不接受自由格式日期文字，也不提供日期原文的写入或回显字段。后端仍须独立解析、校验并规范化，不能因前端限制而省略校验。本节是已确认的目标契约；日期原文字段的实现与存量结构清理尚未在本次文档更新中执行。
 
 同事件 *_date 与 *_at 至多一个非空；两者均空为未知。切换精度的 PATCH 需显式清空旧字段。`2026-02-30`、`2026.11.3` 写标准字段、无时区时刻及小数秒均 422，不静默截断。年份暂定 0001–9999。业务时区 Asia/Shanghai；上例业务日为 2026-11-03。数据库仍存 TEXT，不要求原生 DATE/TIMESTAMP。
 
@@ -334,7 +373,7 @@ HTTP 409。下列判断均包含初始草稿和正式单，取消单不占用：
 
 ### 5.6 批量新建
 
-`POST /api/v2/submissions/batch` 请求 `{"items":[<§5.1 单个请求>, ...]}`，建议上限 100，空数组/超限 400。每项仅支持新建草稿，不混入修改/发布指令；201 data.items 按输入顺序返回保存结果。第 index 项失败时顶层使用对应错误 HTTP/code，details 加零起始 `index`，其余项、slot、版本及日志全部回滚；组内重复、批量整批/分批混用同样拒绝。后续如需批量发布，另定契约。
+`POST /api/v2/submissions/batch` 请求 `{"items":[<§5.1 单个请求>, ...]}`，上限 100，空数组/超限 400。每项仅支持新建草稿，不混入修改/发布指令；201 data.items 按输入顺序返回保存结果。第 index 项失败时顶层使用对应错误 HTTP/code，details 加零起始 `index`，其余项、slot、版本及日志全部回滚；组内重复、批量整批/分批混用同样拒绝。后续如需批量发布，另定契约。
 
 ### 5.7 查询与历史
 
@@ -346,14 +385,14 @@ GET detail 返回 `{submission,current_revision,draft_revision,issues,is_complet
 
 ### 6.1 共同口径
 
-报告及统计默认只取未取消单的当前正式版本，草稿/旧版本不参与。每个响应附 `as_of`、`included_revision_ids` 和口径说明，正式集合在一个一致读快照内确定。暂报数据独立展示，不与正式结果相加。
+正式统计及报告的正式小计只取有效正式版本：当前查询取未取消单的 current_revision_id；历史时点查询取当时有效的正式指针。报告明细可以包含草稿和取消资料，二者不进入正式小计。响应中的 as_of、版本集合及口径用于复核；工序范围报告的版本集合在 summary 中，产品批报告和统计的版本集合在各自响应中。正式集合在一个一致读快照内确定。
 
 日期筛选：
 
 - `date_basis=inspection_day`（默认）：from/to 是 `YYYY-MM-DD`，均包含边界，取按业务时区算出的 paper_inspected_day；不明日期不自动用创建日补齐，返回 unknown_day_count。
 - `date_basis=created_at`：from/to 是有时区的秒精度时点，规范为 UTC，区间 `[from,to)`。
-- 起点大于终点或类型不符 422；可仅给一端。inspection_day 的 from=to 表示一天；created_at 的相等区间为空。
-- 列表时间口径与统计使用同一约定；按月只能截取规范业务日，不能截取旧纸面原文。
+- 起点大于终点或类型不符 422；列表及统计可仅给一端，§6.4 工序范围报告要求两端必填。inspection_day 的 from=to 表示一天；created_at 的相等区间为空。
+- 列表时间口径与统计使用同一约定；按月只基于规范业务日，不解析自由文字或在多份日期存储间回退。
 
 ### 6.2 产品批当前/历史时点报告
 
@@ -403,8 +442,8 @@ summary data 包含 `{group_by,groups,total,as_of,included_revision_ids,unknown_
 
 summary 是整个筛选范围（不限当前分页）的正式统计，包含按product_lot_id/inspection_kind的groups、总计或按类型totals、良率和included_revision_ids。初始草稿、修订草稿与取消不混入正式小计。该报告查询当前版本在所选业务/创建日期范围内的情况；查询历史系统时点用6.2。
 
-## 7. 前端正式切换
+## 7. 调用方流程
 
-不再调用未版本化路径，也不使用 forms/form_no upsert、enforce/mode/expected_save_count/client_request_id 等旧协议。流程为：v2登录→按完整身份选/建产品批→按账户类型选/建工序组→新建或按单ID保存→明确发布。X-Idempotency-Key 仅用于检验业务写入；登录/用户/字典/解析使用各自管理契约。
+流程为：v2登录→按完整身份选/建产品批→按账户类型选/建工序组→新建或按单ID保存→明确发布。X-Idempotency-Key 仅用于检验业务写入；登录/用户/字典/解析使用各自管理契约。
 
-前端提交标记固定为登录/me给出的submission_inspection_kind，未知数量与0区分，日期级用*_date、原文用*_raw。历史报告保留as_of和through_event_id用于复验。旧测试数据清理、账户保留与部署步骤见[迁移](migration.md)。
+前端提交标记固定为登录/me给出的submission_inspection_kind，未知数量与0区分，日期级用*_date、准确时点用*_at；不提交日期原文。sample_raw仍仅用于样品原文。历史报告保留as_of和through_event_id用于复验。旧测试数据清理、账户保留与部署步骤见[迁移](migration.md)。

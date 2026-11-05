@@ -17,7 +17,7 @@ go run ./cmd/createuser -username sampler -password '<your-password>' -account-t
 
 管理员也可通过POST /api/v2/users或PATCH /api/v2/users/{id}维护account_type。NORMAL/SAMPLING是填报权限，is_admin是账户管理权限，二者独立。前端使用登录/me的submission_inspection_kind固定填报标记；服务端对目标组/单逐笔校验。修改账户类型使该用户会话及幂等缓存失效。
 
-新增报告：
+报告：
 
 - `GET /api/v2/reports/product-lots/{id}?as_of=<RFC3339-seconds>&through_event_id=<optional>`：系统时点全工序状态/数据/良率，事件序号可固定同秒视图。
 - `GET /api/v2/reports/operations/{operation_id}?from=2026-11-01&to=2026-11-30&product_lot_id=<optional>`：工序范围明细与完整筛选范围小计。
@@ -43,4 +43,23 @@ go test -race ./internal/ledger -count=1 # 先设置 LENS_TEST_POSTGRES_DSN 才�
 
 容器：`docker compose up -d --build`。可用 `docker build --build-arg GOPROXY=https://goproxy.cn -t lens-qs:v2 .` 选择构建代理。镜像只带CSV参考资料，不包含本地库/备份/.env，重启不会重设已有管理员密码。
 
-本地脚本 `pwsh -File scripts/dev.ps1 -NoWait`；可选 `-ResetTestData`显式清测试业务并保留账户，旧删库 `-Reset` 已移除。CI覆盖SQLite和PostgreSQL，主分支阶段与验收记录见[全局进度](../docs/progress.md)，调用方变更见[发布说明](../docs/v2-release.md)。
+## 配置与联调
+
+以下命令和相对路径均以 `backend` 为工作目录。真实环境变量优先于 `.env`；首次复制示例配置后确认数据库、监听、来源和引导账户，示例密码不作为部署凭据。
+
+| 变量 | 默认 | 用途 |
+|---|---|---|
+| APP_ENV / APP_ADDR | dev / :8080 | 运行环境与监听地址 |
+| DB_DRIVER / DB_DSN | sqlite / ./data/lens.db | sqlite文件或postgres连接串 |
+| AUTO_MIGRATE | false | API启动自动迁移；生产应明确选择执行方式 |
+| SESSION_TTL / SESSION_IDLE_TTL | 12h / 2h | 绝对到期与空闲到期 |
+| MAX_LOGIN_FAIL / LOCK_DURATION | 5 / 10m | 连续失败账户锁定 |
+| COOKIE_NAME / COOKIE_SECURE | sid / false | Cookie名称，HTTPS环境启用Secure |
+| CORS_ORIGINS | 空 | 允许的来源，逗号分隔；空值不下发CORS头 |
+| BOOTSTRAP_ADMIN_USER / BOOTSTRAP_ADMIN_PASS | 空 | 仅空用户库引导管理员 |
+
+浏览器Cookie联调需要配置允许来源并开启 `credentials: 'include'` 或 withCredentials。SameSite=Lax的跨站限制独立于CORS；跨站部署可采用Bearer，令牌须作为凭据保护。检验写入还需允许 `X-Idempotency-Key` 请求头，读取回放/排障头时应验证浏览器可见性。具体CORS头暴露和令牌并存优先规则列为独立核验事项。
+
+密码采用Argon2id，令牌仅存哈希。改密成功后重新登录；停用、重置密码和类型变更须撤销会话。运行日志、配置和备份不得泄露凭据。数据库每日备份并保留30天、恢复演练与性能目标是部署验收项，不能由服务可启动推定通过；详见公共设计。
+
+本地脚本 `pwsh -File scripts/dev.ps1 -NoWait`；可选 `-ResetTestData`显式清测试业务并保留账户，旧删库 `-Reset` 已移除。CI覆盖SQLite和PostgreSQL，交付边界见[交付状态](../docs/progress.md)，认证、字典、解析与安全约定见[公共设计](../docs/common-design.md)。

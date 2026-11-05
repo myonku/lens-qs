@@ -1,10 +1,10 @@
 # v2 正式系统设计
 
-版本 2.0.0，2026-11-04。依据 [需求](requirements.md) 与 [接口](api.md)。
+版本 2.0.0，文档修订 2026-11-05。依据[需求](requirements.md)与[接口](api.md)。认证、字典、解析、模板、分层、安全与非功能约定见[公共设计](common-design.md)。两份设计共同生效，领域规则不免除公共约束。
 
 ## 1. 架构与领域
 
-Go + Gin + sqlx 单体，SQLite/PostgreSQL 两套手写迁移。账户、会话、字典、参考清单、样品解析为共享基础能力；ledger 为唯一检验业务域。不再装配 inspection/stats/idempotency 旧包。所有接口统一 /api/v2，healthz 保持独立，根信息报告 2.0.0。
+Go + Gin + sqlx 单体，SQLite/PostgreSQL 两套手写迁移。账户、会话、字典、参考清单、样品解析为共享基础能力；ledger 为唯一检验业务域。所有接口统一 /api/v2，healthz 保持独立，根信息报告 2.0.0。
 
 product_lots 共享身份唯一 (shared_form_no,sample_identity_key)，只 trim；operation_groups 唯一 (product_lot_id,operation_id,inspection_kind)，维护 OPEN/CLOSED 与 EMPTY/WHOLE/SPLIT。inspection_submissions 稳定 ID、version、当前正式/草稿指针；submission_slots 的组+规范批号主键防重，整批内部键空字符串。组合外键校验组、类型及单据/版本归属。
 
@@ -40,8 +40,8 @@ GET reports/operations/{operation_id} 要求 from/to，可选 product_lot_id、i
 
 ## 6. 日期与正式切换
 
-业务日期/时点/系统时间物理列均TEXT，标准日期YYYY-MM-DD，时点UTC秒精度；原始纸面文字独立。日期与时点二选一，切换精度PATCH需清空旧字段。非法日期、无时区/小数秒时点拒绝。
+业务日期/时点/系统时间物理列均TEXT，标准日期YYYY-MM-DD，时点UTC秒精度。前端通过日期/时间选择组件提交规范值；后端独立解析、校验、规范化后存储，不再设计日期原文的独立字段或备份轨道。日期与时点二选一，切换精度PATCH需清空旧字段。非法日期、自由格式文字、无时区/小数秒时点拒绝。日期级与准确时点是同一事件的互斥精度，不是原文/解析值两份事实；查询、统计与业务日派生仅使用该规范值，不从日期原文回退。样品原文和纸面单位文字仍保留，此约定仅针对日期/时间。日期原文字段的移除为已确认的后续实现变更，本次仅更新设计。
 
 0006 新增账户类型并删除旧业务表、旧幂等及迁移候选表，旧表清理不可逆；down迁移不能假装恢复被删除业务证据。保留0001–0005迁移文件仅供升级链，运行代码不再查询旧表。已有v2业务不由0006自动清空；测试业务通过显式reset-testdata命令清理。命令保留users/字典，清业务审计/幂等/会话/解析缓存并设置报告历史起点，防止清空后回放已删除数据。
 
-真实环境部署先停旧调用方写入、备份并确认测试数据范围，再迁移并更换全部调用方路径。历史施工记录只描述当时结果，当前设计以本文件为准，阶段状态统一见[项目进度](progress.md)。
+部署和数据维护的前置条件、操作与恢复见[迁移说明](migration.md)；备份与安全约束见公共设计。
