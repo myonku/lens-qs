@@ -39,6 +39,13 @@ func main() {
 
 	// 依赖装配
 	userStore := users.NewStore(db, cfg.DBDriver)
+	if _, err := userStore.BootstrapAdmin(ctx, users.CreateInput{
+		Username: cfg.BootstrapAdminUser, Password: cfg.BootstrapAdminPass,
+		AccountType: cfg.BootstrapAdminType, DisplayName: cfg.BootstrapAdminName,
+		EmployeeNo: optional(cfg.BootstrapAdminEmp), Department: optional(cfg.BootstrapAdminDepartment),
+	}); err != nil {
+		log.Fatalf("[fatal] 管理员引导失败: %v", err)
+	}
 	authSvc := auth.NewService(db, userStore, auth.Config{
 		SessionTTL:     cfg.SessionTTL,
 		SessionIdleTTL: cfg.SessionIdleTTL,
@@ -83,4 +90,11 @@ func main() {
 		log.Printf("[warn] 关闭超时: %v", err)
 	}
 	log.Println("[info] 已退出")
+}
+
+func optional(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }

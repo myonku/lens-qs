@@ -127,6 +127,10 @@ type CreateInput struct {
 
 // Create 创建用户。
 func (s *Store) Create(ctx context.Context, in CreateInput) (*User, error) {
+	return s.create(ctx, in, false)
+}
+
+func (s *Store) create(ctx context.Context, in CreateInput, onlyEmpty bool) (*User, error) {
 	if in.AccountType == "" {
 		in.AccountType = "NORMAL"
 	}
@@ -143,6 +147,9 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (*User, error) {
 	if existing, err := s.GetByUsername(ctx, username); err != nil {
 		return nil, err
 	} else if existing != nil {
+		if onlyEmpty {
+			return nil, nil
+		}
 		return nil, httpx.Conflict("登录名已存在", map[string]string{"reason": "user_exists"})
 	}
 
@@ -172,6 +179,15 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (*User, error) {
 		return nil, err
 	}
 	defer w.Close()
+	if onlyEmpty {
+		var count int
+		if err := w.GetContext(w.Context, &count, `SELECT COUNT(*) FROM users`); err != nil {
+			return nil, err
+		}
+		if count != 0 {
+			return nil, nil
+		}
+	}
 	if w.Actor.ID != "" && !w.Actor.Admin {
 		return nil, httpx.Forbidden("admin required")
 	}

@@ -27,9 +27,13 @@ func main() {
 	accountType := flag.String("account-type", "", "NORMAL 或 SAMPLING；创建默认 NORMAL，更新省略则保持")
 	isAdmin := flag.Bool("admin", false, "是否管理员")
 	update := flag.Bool("update", false, "已存在时更新（改密码 / 改管理员标记）")
+	fromEnv := flag.Bool("from-env", false, "按 BOOTSTRAP_ADMIN_* 初始化或同步管理员资料；已有登录名/密码保持")
 	flag.Parse()
+	if *fromEnv && flag.NFlag() != 1 {
+		log.Fatal("[fatal] -from-env 不能与其他参数混用")
+	}
 
-	if *username == "" || *password == "" {
+	if !*fromEnv && (*username == "" || *password == "") {
 		log.Fatal("[fatal] 必须提供 -username 与 -password")
 	}
 
@@ -49,6 +53,18 @@ func main() {
 	}
 
 	st := users.NewStore(db, cfg.DBDriver)
+	if *fromEnv {
+		_, err := st.ConfigureAdmin(ctx, users.CreateInput{
+			Username: cfg.BootstrapAdminUser, Password: cfg.BootstrapAdminPass,
+			AccountType: cfg.BootstrapAdminType, DisplayName: cfg.BootstrapAdminName,
+			EmployeeNo: opt(cfg.BootstrapAdminEmp), Department: opt(cfg.BootstrapAdminDepartment),
+		})
+		if err != nil {
+			log.Fatalf("[fatal] 管理员配置应用失败: %v", err)
+		}
+		log.Print("[info] 管理员配置已应用；已有登录名与密码保持")
+		return
+	}
 	existing, err := st.GetByUsername(ctx, *username)
 	if err != nil {
 		log.Fatalf("[fatal] 查询用户失败: %v", err)
@@ -62,7 +78,7 @@ func main() {
 			DisplayName: opt(*name),
 			EmployeeNo:  httpx.Optional[string]{Set: *empNo != "", Value: opt(*empNo)},
 			Department:  httpx.Optional[string]{Set: *department != "", Value: opt(*department)},
-			IsAdmin:     &*isAdmin,
+			IsAdmin:     isAdmin,
 			Password:    password,
 		})
 		if err != nil {

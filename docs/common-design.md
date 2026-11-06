@@ -45,6 +45,10 @@
 
 管理员引导仅在用户库为空时执行。重启、种子初始化或迁移不得覆盖已有密码。不得在仓库、示例、镜像或日志中留下可用的默认生产凭据。
 
+本机及环境配置支持可选 `BOOTSTRAP_ADMIN_USER/PASS`：空用户库启动时按配置建立管理员，两项均为空则禁用、仅填一项则拒绝引导；没有内置凭据。用户库非空时普通启动忽略所有引导项，不新增账号或修改已有账号。创建身份由 `BOOTSTRAP_ADMIN_ACCOUNT_TYPE` 指定 NORMAL/SAMPLING，省略默认 NORMAL；可附带 NAME、EMP、DEPARTMENT。
+
+保留 `cmd/createuser -username/-password` 显式创建路径。`cmd/createuser -from-env` 显式应用上述环境配置：空用户库可以创建；指定已有管理员时保留 ID、登录名和密码，只同步非空的 ACCOUNT_TYPE、NAME、EMP、DEPARTMENT，留空保持原值。改变配置登录名不会重命名旧账号；用户库非空而该登录名不存在时拒绝，不借引导配置新增账户或提升普通用户权限。身份改变按用户更新规则撤销旧会话及领域幂等。已有密码的修改仍要求独立的显式改密操作。
+
 ## 3. 字典、单位和模板
 
 字典项用 category + code 唯一识别，并保留稳定 ID、label、sort_no、active、meta。code 与中文 label 分开；改 label 不改变关联 ID。meta 的 API 类型固定为对象或 null，不让客户端猜测它是对象还是 JSON 字符串。

@@ -1,6 +1,6 @@
-# 后端工程：第二轮开发交付
+# 后端工程：本机开发与联调
 
-当前交付覆盖[重建计划](../docs/rebuild-plan.md)的 A-01～A-07/G1 和 B-01～B-06/G2，结构版本为 0008。业务依据为[需求](../docs/requirements.md)、[设计](../docs/design.md)、[公共设计](../docs/common-design.md)、[字段](../docs/fields.md)与[API](../docs/api.md)，验证证据及边界见[G2 验收记录](../docs/rebuild-g2.md)。本次仅作开发交付，没有切换现存服务或开发库；部署位置、可信来源/代理、RPO/RTO 和记录保留期留待后续确定。
+当前后端数据库结构版本为 0008，默认在 Windows 本机运行，日常使用 SQLite，仅作开发测试。业务依据为[需求](../docs/requirements.md)、[设计](../docs/design.md)、[公共设计](../docs/common-design.md)、[字段](../docs/fields.md)与[API](../docs/api.md)。重建和本机装配已经完成，历史节点及验证证据入口见[项目历史](../docs/history.md)。真实域内前端联调及正式部署参数留待后续确定。
 
 ## 接口范围
 
@@ -10,22 +10,56 @@
 
 旧 draft/publish、POST units 和未版本化业务别名返回 404。Excel/CSV、打印/PDF、历史检验台账导入仍为低优先级后续能力，参考图号导入不能用来导入历史检验单。
 
-## 普通启动
+## 本机启动与前端联调
 
-在 backend 目录使用自选的隔离配置；已有 `.env` 不覆盖。`go run ./cmd/api` 与 `scripts/dev.ps1` 只校验结构并启动，不迁移、seed、清库或创建账号。旧库、缺损结构、迁移校验不符会拒绝启动。历史 AUTO_MIGRATE、SEED_ON_START、BOOTSTRAP_ADMIN_* 不再控制启动行为。
+日常在 `backend` 目录运行，本机 `.env` 配置 `APP_ENV=dev`、`APP_ADDR=:8080`、`DB_DRIVER=sqlite`、`DB_DSN=./data/lens.db`。已有本机库已显式完成 0006 → 0008 重建，无需重复初始化、seed 或创建账号；使用原有账户密码登录。
 
 ```powershell
-# 本例只创建全新隔离开发库，不覆盖已有 .env 或使用现存 lens.db。
+cd D:\Pr\lens-qs\backend
+./scripts/dev.ps1          # 前台运行，Ctrl+C 退出
+# 或后台运行；仅选择其中一种启动方式，避免端口冲突：
+./scripts/dev.ps1 -NoWait
+Invoke-RestMethod http://localhost:8080/healthz
+```
+
+后台日志为 `bin/api.log` 和 `bin/api.err`，可通过 `Get-Process lens-qs-api` 查看进程，并用 `Stop-Process -Id <进程ID>` 停止。重新启动前先停止当前实例。普通启动校验结构，不迁移、seed 或清库；仅在用户库为空且配置引导凭据时创建初始管理员。已有账号不受启动配置影响。旧库、缺损结构、迁移校验不符会拒绝启动。历史 AUTO_MIGRATE、SEED_ON_START 仍不生效；可选 BOOTSTRAP_ADMIN_* 配置现已恢复，规则见下节。
+
+后端地址为 `http://localhost:8080`，API 前缀 `/api/v2`。本机允许来源为 `http://localhost:8080,http://127.0.0.1:8080`，Cookie 使用 HTTP（`COOKIE_SECURE=false`）。Cookie 登录和后续请求须使用同一个主机名。前端后续使用其他域名或端口时，将其准确 Origin 追加到 `.env` 的 `CORS_ORIGINS` 并重启服务；同端口前端需通过开发代理转发 `/api/v2`，后端自身不提供前端应用。监听 `:8080` 可供域内连接，但浏览器来源仍须显式配置，网络可达性取决于本机防火墙和域内网络。
+
+仅在另一台机器首次使用**空库**时执行以下装配；不覆盖已有 `.env`：
+
+```powershell
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-$env:DB_DRIVER = 'sqlite'
-$env:DB_DSN = './data/g2-dev.db'
-$env:CORS_ORIGINS = 'http://localhost:3000'
+New-Item -ItemType Directory -Force data | Out-Null
 go run ./cmd/migrate -initialize
 go run ./cmd/seed
-# 显式创建所需初始账号；密码由操作者选定，不使用固定凭据。
 go run ./cmd/createuser -username <login> -password <chosen-password> -admin
-go run ./cmd/api
+./scripts/dev.ps1
 ```
+
+## 可选管理员初始化配置
+
+`.env` 支持以下可选项，示例不包含可用的默认凭据：
+
+| 配置项 | 规则 |
+|---|---|
+| `BOOTSTRAP_ADMIN_USER` / `BOOTSTRAP_ADMIN_PASS` | 空用户库自动创建管理员；两项均空禁用，只填一项报错。已有用户库启动时全部忽略，绝不覆盖账号或密码 |
+| `BOOTSTRAP_ADMIN_ACCOUNT_TYPE` | `NORMAL` 或 `SAMPLING`；创建时省略默认 NORMAL；显式同步已有账户时省略保持原身份 |
+| `BOOTSTRAP_ADMIN_NAME` | 非空时指定显示名 |
+| `BOOTSTRAP_ADMIN_EMP` | 非空时指定工号 |
+| `BOOTSTRAP_ADMIN_DEPARTMENT` | 非空时指定部门文字 |
+
+本机 `.env` 已从切换前私有配置恢复原引导登录名与密码，没有改动数据库内的账号名或密码。配置可以保留以便空库重建，但不会在每次启动时重置账户。
+
+若要将身份（例如抽检 SAMPLING）或其他资料应用到已有管理员，修改对应非空项后显式执行：
+
+```powershell
+go run ./cmd/createuser -from-env
+```
+
+该命令按配置登录名定位管理员，保留已有 ID、登录名、密码、权限和启停状态，只同步非空资料；不变时不写入。身份改变会撤销该账号旧会话和领域幂等，需重新登录。若用户库非空但指定账号不存在，或指定的是普通用户，则拒绝，避免误建第二个管理员或提升权限。修改配置登录名不等于重命名已有账户。`-from-env` 不能与其他参数混用。
+
+原 `-username/-password/-admin` 显式创建路径继续保留；已有账户显式改密仍需 `-update`，其权限/密码变更不属于配置同步规则。
 
 初始化只接受空库或已匹配的当前结构；seed 只补缺项，不覆盖人工标签、别名、排序、停用状态、图号或已有账号密码。API 没有首次改密业务关卡。密码创建/重置为 8–128 字符，旧 PHC 哈希仍按原参数验证。
 
@@ -58,7 +92,7 @@ PostgreSQL 使用匹配服务端版本的 `pg_dump --format=custom` 做一致备
 
 重建保留账号 ID/密码/工号/权限/类型、部门文字、人工字典/图号、人工缓存确认、非检验旧审计及原迁移记录。旧组织目录另存 preserved_organization_units；相同工序的 ID 映射保存在 dictionary_id_mappings。人工解析确认保留并标记 legacy-unverified/needs_review，不冒充当前规则确认。清除测试检验记录、旧业务回放基线、会话、领域幂等及自动缓存。新历史起点在首个领域事务提交时建立，无虚构单据事件。
 
-0008 为图号增加可空 is_rx 和序号唯一约束，并增加筛选投影/索引及共享目录版本。升级保留旧 false/true 值，不猜测其原始含义；新资料未提供 Rx 证据时保持 null。旧图号序号重复会使整次升级回滚，须先核对冲突，不能静默合并。普通 API/容器启动不会执行重建或升级。
+0008 为图号增加可空 is_rx 和序号唯一约束，并增加筛选投影/索引及共享目录版本。升级保留旧 false/true 值，不猜测其原始含义；新资料未提供 Rx 证据时保持 null。旧图号序号重复会使整次升级回滚，须先核对冲突，不能静默合并。普通 API/容器启动不会执行重建或升级；仅在空用户库按可选配置引导管理员。
 
 重建/升级失败整体回滚；回退依赖停写时的完整备份及匹配的旧程序/配置，不提供有损 down 迁移。开发验证包含恢复后重开服务并复验历史报告。新版本产生真实资料后，不得用切换前备份直接覆盖。
 
@@ -79,7 +113,19 @@ go run ./cmd/reset-testdata -confirm-test-data -target-fingerprint <preview-fing
 - `store.ReadView / Reader / Snapshot / Boundary`：一致读与完整事务上界；`ledger.Filter` 统一列表、统计及范围报告筛选，详情按页批量读取，历史报告按原子事件边界重放。
 - `field_schemas / form_templates`：持久不可变版本定义；每份保存版本与创建工序/操作者证据绑定。普通接口没有改写历史版本或模板的入口。
 
-## 工程验证
+## 本机全量验证（默认路径）
+
+```powershell
+./scripts/verify-local.ps1
+# 可选：只把 PostgreSQL 作为一次性测试依赖；应用和 Go 测试仍在本机执行。
+./scripts/verify-local.ps1 -WithPostgres
+# 日常快速回归可跳过年度规模性能案例：
+./scripts/verify-local.ps1 -SkipPerformance
+```
+
+脚本默认运行本机 SQLite 全包 race、vet、build 和年度规模性能测试。测试数据库使用临时文件或独立 schema，不向日常 `data/lens.db` 灌数；脚本暂时清除并在结束时恢复测试环境变量，防止误选数据库。`-WithPostgres` 需要 Docker Desktop，随机绑定本机端口、新建一次性 PostgreSQL 17 容器，运行原生 Go PostgreSQL 全包 race、真实备份恢复及性能测试，结束后删除容器。Windows race 检查需可用的 gcc/CGO。应用日常启动不需要 Docker。
+
+原始命令：
 
 ```powershell
 go test -race ./... -count=1
@@ -89,9 +135,11 @@ go build ./...
 # 完整备份恢复案例再设置 LENS_TEST_PG_DOCKER_CONTAINER，指向一次性的 PostgreSQL 容器。
 ```
 
-CI 在 Linux 运行两库全包 race 测试、vet、build。未配置 PostgreSQL 时，备份恢复专用案例明确 skip；不能把 SQLite 结果写成双库结果。实际本机及 Linux 验证环境、性能结果和 AC 映射见 G2 记录；远端 Actions 状态不冒充本地执行证据。
+CI 在 Linux 运行两库全包 race 测试、vet、build。未配置 PostgreSQL 时，备份恢复专用案例明确 skip；不能把 SQLite 结果写成双库结果。既有本机及 Linux 验证环境、性能结果和验收映射见[阶段归档](../archive/2026-11-06/README.md)；远端 Actions 状态不冒充本地执行证据。
 
-在 Docker Desktop/PowerShell 中复验完整 Linux 矩阵与年度规模性能：
+## 可选 Linux/容器交付复验
+
+以下仅保留为跨平台验证入口，不作为本机后续开发/联调的默认路径。在 Docker Desktop/PowerShell 中复验 Linux 矩阵与年度规模性能：
 
 ```powershell
 docker build -f Dockerfile.verify -t lens-qs:g2-verify .

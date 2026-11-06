@@ -17,7 +17,7 @@ import (
 
 func main() {
 	status := flag.Bool("status", false, "read-only inventory")
-	initialize := flag.Bool("initialize", false, "initialize an empty isolated database")
+	initialize := flag.Bool("initialize", false, "initialize an empty database")
 	rebuild := flag.Bool("rebuild-test-data", false, "explicitly rebuild known v6 inspection test data")
 	upgrade := flag.Bool("upgrade", false, "explicit non-destructive v7 to v8 upgrade")
 	target := flag.String("target-fingerprint", "", "fingerprint from status")

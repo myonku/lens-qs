@@ -1,4 +1,4 @@
-// Package config 从环境变量读取配置（无配置文件，便于容器化部署）。
+// Package config 从本地 .env 和环境变量读取配置，环境变量优先。
 package config
 
 import (
@@ -29,6 +29,14 @@ type Config struct {
 	CookieName     string
 	CookieSecure   bool
 	CORSOrigins    []string
+
+	// BootstrapAdmin 仅供空用户库引导或显式配置同步；没有默认凭据。
+	BootstrapAdminUser       string
+	BootstrapAdminPass       string
+	BootstrapAdminType       string
+	BootstrapAdminName       string
+	BootstrapAdminEmp        string
+	BootstrapAdminDepartment string
 }
 
 // Load 读取环境变量并返回配置。缺失项使用默认值。
@@ -47,13 +55,19 @@ func Load() (*Config, error) {
 		DBMaxOpen: envInt("DB_MAX_OPEN", 10),
 		DBMaxIdle: envInt("DB_MAX_IDLE", 5),
 
-		SessionTTL:     envDuration("SESSION_TTL", 12*time.Hour),
-		SessionIdleTTL: envDuration("SESSION_IDLE_TTL", 2*time.Hour),
-		MaxLoginFail:   envInt("MAX_LOGIN_FAIL", 5),
-		LockDuration:   envDuration("LOCK_DURATION", 10*time.Minute),
-		CookieName:     env("COOKIE_NAME", "sid"),
-		CookieSecure:   envBool("COOKIE_SECURE", false),
-		CORSOrigins:    envList("CORS_ORIGINS", nil),
+		SessionTTL:               envDuration("SESSION_TTL", 12*time.Hour),
+		SessionIdleTTL:           envDuration("SESSION_IDLE_TTL", 2*time.Hour),
+		MaxLoginFail:             envInt("MAX_LOGIN_FAIL", 5),
+		LockDuration:             envDuration("LOCK_DURATION", 10*time.Minute),
+		CookieName:               env("COOKIE_NAME", "sid"),
+		CookieSecure:             envBool("COOKIE_SECURE", false),
+		CORSOrigins:              envList("CORS_ORIGINS", nil),
+		BootstrapAdminUser:       env("BOOTSTRAP_ADMIN_USER", ""),
+		BootstrapAdminPass:       os.Getenv("BOOTSTRAP_ADMIN_PASS"),
+		BootstrapAdminType:       env("BOOTSTRAP_ADMIN_ACCOUNT_TYPE", ""),
+		BootstrapAdminName:       env("BOOTSTRAP_ADMIN_NAME", ""),
+		BootstrapAdminEmp:        env("BOOTSTRAP_ADMIN_EMP", ""),
+		BootstrapAdminDepartment: env("BOOTSTRAP_ADMIN_DEPARTMENT", ""),
 	}
 
 	switch c.DBDriver {
