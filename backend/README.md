@@ -37,6 +37,16 @@ go run ./cmd/createuser -username <login> -password <chosen-password> -admin
 ./scripts/dev.ps1
 ```
 
+## 工序映射表与启动同步
+
+工序清单维护在 [`data/inspection_operations.csv`](data/inspection_operations.csv)，当前包含现场 13 道工序，按 `sort_no` 排序。新增工序只需追加行并重启后端，无需改代码或执行 seed。默认路径为 `./data/inspection_operations.csv`，可通过 `OPERATION_CATALOG_FILE` 指定其他文件；相对路径以进程工作目录为准，部署时须一并携带此文件。
+
+CSV 使用 UTF-8（支持 BOM），固定表头 `code,label,sort_no,active`。`code` 是非空且唯一的稳定编码，`label` 是非空显示名称，`sort_no` 是整数，`active` 只接受 `true/false`。已有编码不能为改名而修改，请修改 label；ID 首次插入时自动生成，相同 code 重启后保留原 ID 和元数据。历史工序组名称快照保持原值。
+
+每次启动在接受 HTTP 请求前完整校验文件，在单个事务中新增缺项、更新名称/顺序/启用状态，并保留审计。重复启动无变化时不增加审计事件。文件缺失、格式错误或数据库写入失败会拒绝启动，且不留下部分同步结果。表格中的字段优先于 API 对同一工序的维护；未列出的旧字典项保留，不自动删除或停用。停用须保留该行并设置 `active=false`，不会影响已有单据及历史。原有 `GENERAL` 保留以兼容旧数据，新空库不再自动创建该项。
+
+查看完整目录：`GET /api/v2/dict/items?category=inspection_operation&include_inactive=true`。前端仍须使用返回的 `id` 创建工序组，不要将 code 当作 operation_id。
+
 ## 可选管理员初始化配置
 
 `.env` 支持以下可选项，示例不包含可用的默认凭据：

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -120,7 +121,7 @@ func migrate(ctx context.Context, db *sqlx.DB, driver string, limit int, explici
 			return nil, fmt.Errorf("unknown, missing or renamed migration at version %d", m.Version)
 		}
 		raw, _ := migrations.FS.ReadFile(path.Join(driver, m.Name))
-		h := digest(raw)
+		h := migrationDigest(raw)
 		var stored string
 		err = tx.GetContext(ctx, &stored, tx.Rebind(`SELECT digest FROM migration_checksums WHERE version=?`), m.Version)
 		if err == sql.ErrNoRows {
@@ -133,7 +134,7 @@ func migrate(ctx context.Context, db *sqlx.DB, driver string, limit int, explici
 			}
 		} else if err != nil {
 			return nil, err
-		} else if stored != h {
+		} else if !migrationDigestMatches(raw, stored) {
 			return nil, fmt.Errorf("migration checksum mismatch: %d", m.Version)
 		}
 		applied[m.Version] = true
@@ -175,7 +176,7 @@ func migrate(ctx context.Context, db *sqlx.DB, driver string, limit int, explici
 		if _, err = tx.ExecContext(ctx, tx.Rebind(`INSERT INTO schema_migrations VALUES(?,?,?)`), v, names[v], nowText()); err != nil {
 			return nil, err
 		}
-		if _, err = tx.ExecContext(ctx, tx.Rebind(`INSERT INTO migration_checksums VALUES(?,?,?)`), v, digest(raw), "applied-and-verified"); err != nil {
+		if _, err = tx.ExecContext(ctx, tx.Rebind(`INSERT INTO migration_checksums VALUES(?,?,?)`), v, migrationDigest(raw), "applied-and-verified"); err != nil {
 			return nil, err
 		}
 		out = append(out, names[v])
@@ -199,6 +200,20 @@ func migrate(ctx context.Context, db *sqlx.DB, driver string, limit int, explici
 	return out, tx.Commit()
 }
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+
+// Migration files may be checked out with LF or CRLF. New receipts use LF;
+// historical byte-exact receipts remain valid without rewriting the database.
+// Do not normalize general data/backup digests or any other SQL whitespace.
+func migrationDigest(raw []byte) string {
+	return digest(bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n")))
+}
+
+func migrationDigestMatches(raw []byte, stored string) bool {
+	lf := bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+	return stored == digest(raw) || stored == digest(lf) ||
+		stored == digest(bytes.ReplaceAll(lf, []byte("\n"), []byte("\r\n")))
+}
+
 func CheckReady(ctx context.Context, db *sqlx.DB, driver string) error {
 	rows, err := AppliedMigrations(ctx, db)
 	if err != nil {
@@ -223,8 +238,8 @@ func CheckReady(ctx context.Context, db *sqlx.DB, driver string) error {
 		if e = db.GetContext(ctx, &h, db.Rebind(`SELECT digest FROM migration_checksums WHERE version=?`), m.Version); e != nil {
 			return e
 		}
-		if h != digest(raw) {
-			return fmt.Errorf("migration integrity mismatch")
+		if !migrationDigestMatches(raw, h) {
+			return fmt.Errorf("migration integrity mismatch: %s", m.Name)
 		}
 	}
 	var n int

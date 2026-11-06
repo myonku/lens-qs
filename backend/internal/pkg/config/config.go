@@ -11,6 +11,7 @@ import (
 
 // Config 是应用的全部可配置项。
 type Config struct {
+	OperationCatalogFile string // CSV 工序映射表，启动时同步
 	// App
 	Env  string // dev | prod
 	Addr string // 监听地址，如 :8080
@@ -48,12 +49,13 @@ func Load() (*Config, error) {
 	LoadDotEnv(".env", "backend/.env")
 
 	c := &Config{
-		Env:       env("APP_ENV", "dev"),
-		Addr:      env("APP_ADDR", ":8080"),
-		DBDriver:  strings.ToLower(env("DB_DRIVER", "sqlite")),
-		DBDSN:     env("DB_DSN", "./data/lens.db"),
-		DBMaxOpen: envInt("DB_MAX_OPEN", 10),
-		DBMaxIdle: envInt("DB_MAX_IDLE", 5),
+		OperationCatalogFile: env("OPERATION_CATALOG_FILE", "./data/inspection_operations.csv"),
+		Env:                  env("APP_ENV", "dev"),
+		Addr:                 env("APP_ADDR", ":8080"),
+		DBDriver:             strings.ToLower(env("DB_DRIVER", "sqlite")),
+		DBDSN:                env("DB_DSN", "./data/lens.db"),
+		DBMaxOpen:            envInt("DB_MAX_OPEN", 10),
+		DBMaxIdle:            envInt("DB_MAX_IDLE", 5),
 
 		SessionTTL:               envDuration("SESSION_TTL", 12*time.Hour),
 		SessionIdleTTL:           envDuration("SESSION_IDLE_TTL", 2*time.Hour),

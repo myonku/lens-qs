@@ -20,18 +20,18 @@ JSON 使用 UTF-8、snake_case。请求 `Content-Type: application/json`。成�
 {"code":"conflict","message":"数据已被修改，请刷新核对","details":{"reason":"version_conflict","entity_id":"sub-a","current_version":3}}
 ```
 
-| HTTP | code | 使用范围 |
-|---|---|---|
-| 200 | ok | 查询、修改、动作、共享目录按键维护 |
-| 201 | ok | 新建生产批、组、单据、用户，批量新建 |
-| 400 | bad_request | 非法 JSON/类型、未知字段、未知/重复查询参数、缺控制字段、非法分页 |
-| 401 | unauthorized | 未登录、会话过期/撤销、停用账户、登录失败 |
-| 403 | forbidden | 非管理员管理账户、跨检验类型写入 |
-| 404 | not_found | 资源不存在、版本不属于指定单据、未定义路径 |
-| 409 | conflict | 版本、身份、占用、状态或幂等冲突 |
-| 422 | validation_failed | 非负整数、规范日期、计量单位、抽检 LOSS 等值域/业务约束不满足 |
-| 500 | internal_error | 未分类服务异常，不返回 SQL/堆栈/凭据 |
-| 503 | temporarily_unavailable | 存储不可用或有界锁等待耗尽 |
+| HTTP | code                    | 使用范围                                                          |
+| ---- | ----------------------- | ----------------------------------------------------------------- |
+| 200  | ok                      | 查询、修改、动作、共享目录按键维护                                |
+| 201  | ok                      | 新建生产批、组、单据、用户，批量新建                              |
+| 400  | bad_request             | 非法 JSON/类型、未知字段、未知/重复查询参数、缺控制字段、非法分页 |
+| 401  | unauthorized            | 未登录、会话过期/撤销、停用账户、登录失败                         |
+| 403  | forbidden               | 非管理员管理账户、跨检验类型写入                                  |
+| 404  | not_found               | 资源不存在、版本不属于指定单据、未定义路径                        |
+| 409  | conflict                | 版本、身份、占用、状态或幂等冲突                                  |
+| 422  | validation_failed       | 非负整数、规范日期、计量单位、抽检 LOSS 等值域/业务约束不满足     |
+| 500  | internal_error          | 未分类服务异常，不返回 SQL/堆栈/凭据                              |
+| 503  | temporarily_unavailable | 存储不可用或有界锁等待耗尽                                        |
 
 Cookie 默认 sid、HttpOnly、Path=/、SameSite=Lax，HTTPS 使用 Secure；也可提交 `Authorization: Bearer <token>`。两种凭据都存在且不同返回 400 credentials_conflict，相同视为一个凭据；无效 Bearer 不回退其他 Cookie。Cookie 浏览器请求携带 credentials，写请求 Origin 必须在允许来源内。Bearer 调用不依赖 Cookie。
 
@@ -59,12 +59,12 @@ Cookie 默认 sid、HttpOnly、Path=/、SameSite=Lax，HTTPS 使用 Secure；也
 
 ### 1.4 日期与数值
 
-| 类型 | 输入 | 输出与规则 |
-|---|---|---|
-| date | 2026-11-05 | 真实公历 YYYY-MM-DD，年份0001–9999；只有日期不补造时间 |
-| instant | 2026-11-05T09:30:00+08:00 或 Z | 规范 UTC 秒精度，如2026-11-05T01:30:00Z |
-| quantity | 非负 JSON 整数或 null | null 未知，0 明确零；不收字符串/小数/负数 |
-| version/seq | 正整数 | 系统版本令牌/行号；不得使用小数 |
+| 类型        | 输入                           | 输出与规则                                              |
+| ----------- | ------------------------------ | ------------------------------------------------------- |
+| date        | 2026-11-05                     | 真实公历 YYYY-MM-DD，年份0001–9999；只有日期不补造时间 |
+| instant     | 2026-11-05T09:30:00+08:00 或 Z | 规范 UTC 秒精度，如2026-11-05T01:30:00Z                 |
+| quantity    | 非负 JSON 整数或 null          | null 未知，0 明确零；不收字符串/小数/负数               |
+| version/seq | 正整数                         | 系统版本令牌/行号；不得使用小数                         |
 
 quantity 最大9007199254740991，单值和聚合必须精确；聚合超出该安全整数范围返回422 quantity_overflow，不截断或转浮点。所有数量按“片”计。
 
@@ -74,35 +74,35 @@ quantity 最大9007199254740991，单值和聚合必须精确；聚合超出该�
 
 ### 1.5 常见 reason
 
-| reason | HTTP | 含义/关键 details |
-|---|---|---|
-| inspection_kind_forbidden | 403 | 目标类型与当前账户不同；expected_kind/target_kind |
-| product_lot_exists | 409 | product_lot_id，调用方明确选现有批 |
-| operation_group_exists | 409 | operation_group_id |
-| whole_submission_exists | 409 | existing_submission_ids；补填已有整批单 |
-| batch_scope_conflict | 409 | existing_scope，整批/分批互斥 |
-| batch_no_exists | 409 | batch_no、existing_submission_ids |
-| operation_group_closed | 409 | operation_group_id |
-| group_state_conflict | 409 | 已处于目标状态 |
-| version_conflict | 409 | entity_id、current_version |
-| submission_cancelled | 409 | 取消单不可修改/重复取消 |
-| idempotency_key_reused / request_in_progress | 409 | 幂等键重用/处理中 |
-| invalid_measurement_unit | 422 | path；只允许“片”或其固定ID |
-| sampling_loss_forbidden | 422 | path；抽检不能填写LOSS |
-| history_unavailable | 422 | history_started_at |
-| invalid_history_boundary | 422 | 非完整事务边界、上界不属于截止视图 |
+| reason                                       | HTTP | 含义/关键 details                                 |
+| -------------------------------------------- | ---- | ------------------------------------------------- |
+| inspection_kind_forbidden                    | 403  | 目标类型与当前账户不同；expected_kind/target_kind |
+| product_lot_exists                           | 409  | product_lot_id，调用方明确选现有批                |
+| operation_group_exists                       | 409  | operation_group_id                                |
+| whole_submission_exists                      | 409  | existing_submission_ids；补填已有整批单           |
+| batch_scope_conflict                         | 409  | existing_scope，整批/分批互斥                     |
+| batch_no_exists                              | 409  | batch_no、existing_submission_ids                 |
+| operation_group_closed                       | 409  | operation_group_id                                |
+| group_state_conflict                         | 409  | 已处于目标状态                                    |
+| version_conflict                             | 409  | entity_id、current_version                        |
+| submission_cancelled                         | 409  | 取消单不可修改/重复取消                           |
+| idempotency_key_reused / request_in_progress | 409  | 幂等键重用/处理中                                 |
+| invalid_measurement_unit                     | 422  | path；只允许“片”或其固定ID                      |
+| sampling_loss_forbidden                      | 422  | path；抽检不能填写LOSS                            |
+| history_unavailable                          | 422  | history_started_at                                |
+| invalid_history_boundary                     | 422  | 非完整事务边界、上界不属于截止视图                |
 
 ## 2. 对象与内容结构
 
 ### 2.1 核心响应对象
 
-| 名称 | 字段 |
-|---|---|
-| User | id,username,display_name,employee_no,department,is_admin,account_type,status,created_at,updated_at |
-| ProductLot | id,shared_form_no,sample_identity,sample_identity_key,sample_raw,sample_project,sample_model,sample_spec,sample_size,sample_side,version,created_by,created_at |
-| OperationGroup | id,product_lot_id,operation_id,operation_code,operation_label,inspection_kind,template_version,reporting_state,batch_mode,version,created_by,created_at |
-| Submission | id,operation_group_id,batch_no,scope,inspection_kind,state,version,current_revision_id,created_by,created_at,last_saved_by,last_saved_at,cancelled_by,cancelled_at,cancel_reason |
-| Revision | id,submission_id,revision_no,base_revision_id,template_version,content_schema_version,content,saved_by,saved_actor_name,saved_at,reason |
+| 名称           | 字段                                                                                                                                                                             |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| User           | id,username,display_name,employee_no,department,is_admin,account_type,status,created_at,updated_at                                                                               |
+| ProductLot     | id,shared_form_no,sample_identity,sample_identity_key,sample_raw,sample_project,sample_model,sample_spec,sample_size,sample_side,version,created_by,created_at                   |
+| OperationGroup | id,product_lot_id,operation_id,operation_code,operation_label,inspection_kind,template_version,reporting_state,batch_mode,version,created_by,created_at                          |
+| Submission     | id,operation_group_id,batch_no,scope,inspection_kind,state,version,current_revision_id,created_by,created_at,last_saved_by,last_saved_at,cancelled_by,cancelled_at,cancel_reason |
+| Revision       | id,submission_id,revision_no,base_revision_id,template_version,content_schema_version,content,saved_by,saved_actor_name,saved_at,reason                                          |
 
 User 的 employee_no/department 可空；account_type=NORMAL/SAMPLING，status=active/disabled。密码、密码哈希、token 哈希不返回。department 是用户部门，不能放“片”的计量单位ID。
 
@@ -110,19 +110,19 @@ Submission.state=ACTIVE/CANCELLED；operation_group_id 可空；取消元信息�
 
 ### 2.2 Revision.content
 
-| 字段 | 类型 | 省略/空值语义 |
-|---|---|---|
-| paper_unit_id / paper_unit_text | string/null | 单位ID/文字，合法值仅固定“片”项，详见2.3 |
-| paper_submitter / paper_inspector / paper_machine_operator / paper_handover_by | string/null | 纸面人员，不是系统用户ID |
-| paper_submitted_date / paper_submitted_at | date/instant/null | 送检事件精度互斥 |
-| paper_inspected_date / paper_inspected_at | date/instant/null | 检验事件精度互斥 |
-| machine_no | string/null | 当前检验批次的机台 |
-| sample_raw | string/null | 原始样品文字，不自动规范化 |
-| sample_project / sample_model / sample_spec / sample_size / sample_side | string/null | 核心结构化字段，不改生产批身份 |
-| counts | object | 表头total_qty/qualified_qty/defect_qty，每项quantity；三项正式数量及良率的唯一来源 |
-| lines | array | 每行seq、total_qty、qualified_qty、defect_qty、defects、remark |
-| quantity_changes | array | 每项kind、direction、quantity、reason、occurred_date、occurred_at |
-| remark | string/null | 单据备注 |
+| 字段                                                                           | 类型              | 省略/空值语义                                                                      |
+| ------------------------------------------------------------------------------ | ----------------- | ---------------------------------------------------------------------------------- |
+| paper_unit_id / paper_unit_text                                                | string/null       | 单位ID/文字，合法值仅固定“片”项，详见2.3                                         |
+| paper_submitter / paper_inspector / paper_machine_operator / paper_handover_by | string/null       | 纸面人员，不是系统用户ID                                                           |
+| paper_submitted_date / paper_submitted_at                                      | date/instant/null | 送检事件精度互斥                                                                   |
+| paper_inspected_date / paper_inspected_at                                      | date/instant/null | 检验事件精度互斥                                                                   |
+| machine_no                                                                     | string/null       | 当前检验批次的机台                                                                 |
+| sample_raw                                                                     | string/null       | 原始样品文字，不自动规范化                                                         |
+| sample_project / sample_model / sample_spec / sample_size / sample_side        | string/null       | 核心结构化字段，不改生产批身份                                                     |
+| counts                                                                         | object            | 表头total_qty/qualified_qty/defect_qty，每项quantity；三项正式数量及良率的唯一来源 |
+| lines                                                                          | array             | 每行seq、total_qty、qualified_qty、defect_qty、defects、remark                     |
+| quantity_changes                                                               | array             | 每项kind、direction、quantity、reason、occurred_date、occurred_at                  |
+| remark                                                                         | string/null       | 单据备注                                                                           |
 
 新建省略可空字段视为null，省略数组为[]，省略counts为三项null。响应返回所有可空字段和全部35×3缺陷格，不把省略解释成0。绑定不从 ProductLot 自动补写/覆盖样品字段；需要复制由调用方明确填写。
 
@@ -152,16 +152,16 @@ lines[].seq必须正整数，版本内唯一；重复422 duplicate_line_seq。�
 
 issues元素为 `{code,severity,path,message}`，severity固定warning。资料完整、可计算良率、数量平衡互相独立。下列提示不阻断保存：
 
-| code | 条件 |
-|---|---|
-| missing_information | 上述资料缺项，每项一个path |
-| counts_unbalanced | 三项已知且qualified+defect不等于total |
-| quantity_exceeds_total | 已知单项/缺陷格超过可比的检验量 |
-| defect_counts_overlap | 缺陷子项合计与不合格量不同；可能重复计入，不能强制相等 |
-| line_counts_differ | 表头和完整可比行合计不同，path定位counts对应项，表头仍为正式统计来源 |
-| sample_project_missing | 项目缺失，但不加入五项missing_fields |
-| paper_time_in_future | 纸面日期/时点在业务当前日/时点之后 |
-| paper_time_order | 送检与检验时间在同精度可比较且顺序可疑 |
+| code                   | 条件                                                                 |
+| ---------------------- | -------------------------------------------------------------------- |
+| missing_information    | 上述资料缺项，每项一个path                                           |
+| counts_unbalanced      | 三项已知且qualified+defect不等于total                                |
+| quantity_exceeds_total | 已知单项/缺陷格超过可比的检验量                                      |
+| defect_counts_overlap  | 缺陷子项合计与不合格量不同；可能重复计入，不能强制相等               |
+| line_counts_differ     | 表头和完整可比行合计不同，path定位counts对应项，表头仍为正式统计来源 |
+| sample_project_missing | 项目缺失，但不加入五项missing_fields                                 |
+| paper_time_in_future   | 纸面日期/时点在业务当前日/时点之后                                   |
+| paper_time_order       | 送检与检验时间在同精度可比较且顺序可疑                               |
 
 参考不匹配及token未知由解析结果返回，不强制每次保存重复解析。无 enforce=warn/strict 模式切换，非法值不能降为提示。
 
@@ -329,11 +329,11 @@ change-password正文 `{old_password,new_password}`，均非空；旧密码错40
 
 仅管理员；非管理员403。用户管理无用户物理删除入口。
 
-| 方法/路径 | 请求 | 成功data |
-|---|---|---|
-| GET /users | page,page_size,keyword；keyword匹配登录名/显示名/工号 | 分页User |
-| POST /users | username,password必填；display_name默认空串，employee_no/department默认null，is_admin默认false，account_type默认NORMAL | 201 User |
-| PATCH /users/{id} | display_name,employee_no,department,is_admin,account_type,status,password；至少一项 | 200 User |
+| 方法/路径         | 请求                                                                                                                   | 成功data |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------- | -------- |
+| GET /users        | page,page_size,keyword；keyword匹配登录名/显示名/工号                                                                  | 分页User |
+| POST /users       | username,password必填；display_name默认空串，employee_no/department默认null，is_admin默认false，account_type默认NORMAL | 201 User |
+| PATCH /users/{id} | display_name,employee_no,department,is_admin,account_type,status,password；至少一项                                    | 200 User |
 
 username非空trim后唯一，不能PATCH改名；employee_no非空值唯一，空白归null。department为组织文字。PATCH不传保持；employee_no/department可null清空；display_name可空串但不接受null；is_admin/account_type/status/password不接受null；password是重置操作，不返回。status仅active/disabled；非法枚举422。
 
@@ -347,13 +347,13 @@ username非空trim后唯一，不能PATCH改名；employee_no非空值唯一，�
 
 DictItem为 `{id,category,code,label,sort_no,active,meta,created_at,updated_at}`。meta为object/null。类别只采用[参考资料](reference-data.md#1-基础维度)列出的inspection_operation与样品维度，不另保留同义工序类别。代码是稳定标识，标签是显示文字。
 
-| 方法/路径 | 请求 | 响应data |
-|---|---|---|
-| GET /dict/categories | 无 | categories：类别字符串数组 |
-| GET /dict/items | category可选，include_inactive默认false | items,total；按category/sort_no/code排序 |
-| POST /dict/items | category,code必填；label默认code，sort_no默认0，active默认true，meta默认null | 200 DictItem，按category+code存在则维护，否则新增 |
-| PATCH /dict/items/{id} | label,sort_no,active,meta；至少一项 | 200 DictItem |
-| GET /units | 无 | items,total；固定PIECE/片目录项含id/code/name |
+| 方法/路径              | 请求                                                                         | 响应data                                          |
+| ---------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------- |
+| GET /dict/categories   | 无                                                                           | categories：类别字符串数组                        |
+| GET /dict/items        | category可选，include_inactive默认false                                      | items,total；按category/sort_no/code排序          |
+| POST /dict/items       | category,code必填；label默认code，sort_no默认0，active默认true，meta默认null | 200 DictItem，按category+code存在则维护，否则新增 |
+| PATCH /dict/items/{id} | label,sort_no,active,meta；至少一项                                          | 200 DictItem                                      |
+| GET /units             | 无                                                                           | items,total；固定PIECE/片目录项含id/code/name     |
 
 以上所有登录用户可用，与填报类型无关。PATCH省略保持，meta:null清除，其他字段不接受null；空label回落code。category/code不能PATCH更名。停用后历史保留，新建组不得引用停用工序；字典标签变化不覆盖历史快照。单位目录只读，新增其他单位路径不提供。
 
@@ -393,7 +393,7 @@ surfaces为`{code,label}`数组，固定按concave/convex/both排列，中文名
 
 ## 6. 生产批与工序组
 
-### 6.1 GET/POST /product-lots、GET /product-lots/{id}
+### 6.1 GET/POST /product-lots、GET /product-lots/
 
 GET列表分页，支持shared_form_no、sample_identity精确键匹配；keyword包含匹配共享号/完整型号/参考sample_raw。响应分页ProductLot。详情无查询参数，返回ProductLot，不把所有工序数量加为产品数。
 
@@ -405,13 +405,13 @@ POST正文：
 
 shared_form_no/sample_identity必须非空白；其余可空，省略null。仅身份去首尾空白；sample_raw逐字保存。不传inspection_kind，生产批共享。201 data=ProductLot；重复409 product_lot_exists，带product_lot_id。不能自动覆写已有参考样品资料。无PATCH、删除或合并接口。
 
-### 6.2 GET/POST /product-lots/{id}/operation-groups
+### 6.2 GET/POST /product-lots//operation-groups
 
 GET可选inspection_kind=NORMAL/SAMPLING/ALL，默认ALL；返回items/total，每项含group及progress。progress为registered_count、active_count、cancelled_count、incomplete_count，统计本组全部单据当前状态；registered含取消，incomplete只计ACTIVE缺项单。没有发布数、草稿数或生产完成数。
 
 POST正文 `{operation_id,inspection_kind?}`，operation_id为启用工序ID；省略类型取当前账户，null/非法枚举400，相反类型403。201返回OperationGroup，初始OPEN/EMPTY/version=1。同批同工序同类型已存在409 operation_group_exists，不能作为新单自动合并。
 
-### 6.3 GET /operation-groups/{id}、POST /operation-groups/{id}/close|reopen
+### 6.3 GET /operation-groups/、POST /operation-groups//close|reopen
 
 GET无参数，200 `{group,progress}`。close/reopen正文 `{expected_version,reason}`，reason非空白必填，200返回同结构。关闭只限制新增及未归组单绑定；已有ACTIVE单补填、更正、取消不受影响。关闭不检查missing_fields，允许空组关闭，不联动其他工序/类型。
 
@@ -447,18 +447,18 @@ batch_no省略/null/空串/全空白归整批，响应batch_no=null、scope=WHOL
 
 同一组（已隔离类型）内只有一张有效整批单，或多张有效具名分批单。取消单不占用。
 
-| 当前占用 | 新请求 | 结果 |
-|---|---|---|
-| 整批 | 整批 | 409 whole_submission_exists |
-| 整批 | 任意具名分批 | 409 batch_scope_conflict |
-| 分批a/b | 整批 | 409 batch_scope_conflict |
-| 分批a/b | a | 409 batch_no_exists |
-| 分批a/b | c | 201 |
-| 组CLOSED | 新建或绑定 | 409 operation_group_closed |
+| 当前占用 | 新请求       | 结果                        |
+| -------- | ------------ | --------------------------- |
+| 整批     | 整批         | 409 whole_submission_exists |
+| 整批     | 任意具名分批 | 409 batch_scope_conflict    |
+| 分批a/b  | 整批         | 409 batch_scope_conflict    |
+| 分批a/b  | a            | 409 batch_no_exists         |
+| 分批a/b  | c            | 201                         |
+| 组CLOSED | 新建或绑定   | 409 operation_group_closed  |
 
 details可含operation_group_id、existing_submission_ids、existing_scope、batch_no、allowed_action=edit_existing。先校验权限、组状态，再查模式/重复。不同组同名批号合法。同号冲突不能偷偷变成更新、生成随机批号或重建组绕过。
 
-### 7.3 PATCH /submissions/{id}
+### 7.3 PATCH /submissions/
 
 正文 `{expected_version,patch,reason?,operation_group_id?,batch_no?}`。patch是content补丁，绑定/改未归组批号时可省略，其他保存必须非空。reason可空，记录本次更正说明。
 
@@ -472,7 +472,7 @@ details可含operation_group_id、existing_submission_ids、existing_scope、bat
 
 已归组后，即使传相同值也拒绝operation_group_id/batch_no顶层字段，400 immutable_identity。inspection_kind永不允许PATCH。组关闭仍允许已有单内容保存；取消单409 submission_cancelled。归组错误需取消重建，不支持普通移组。
 
-### 7.4 POST /submissions/{id}/cancel
+### 7.4 POST /submissions//cancel
 
 正文 `{expected_version,reason}`，reason非空白。200返回取消后的Detail；单据version+1，content/revision_no不变，state=CANCELLED，设置取消证据，立即退出当前统计并释放占用；旧版仍可读。
 
@@ -482,37 +482,37 @@ details可含operation_group_id、existing_submission_ids、existing_scope、bat
 
 正文 `{items:[<7.1请求>,...]}`，1–100项；仅批量新建，不混合修改/取消。201 `{items:[Detail,...]}`，按输入顺序。任一项失败顶层返回该HTTP/code，details附零起始index；其他单据、占用、内容版本、审计和成功缓存全部回滚。内部同组重复或整批/分批竞争同样拒绝。
 
-### 7.6 GET /submissions、GET /submissions/{id}
+### 7.6 GET /submissions、GET /submissions/
 
 GET列表分页，返回每单一个Detail；取消单保留最后版。支持以下参数，均使用当前版字段：
 
-| 参数 | 语义 |
-|---|---|
-| product_lot_id,operation_group_id,operation_id | 精确归属；多个条件必须一致，否则无结果 |
-| inspection_kind | NORMAL/SAMPLING/ALL，默认ALL |
-| state | ACTIVE/CANCELLED，默认两者均列 |
-| scope | WHOLE/SPLIT |
-| batch_no | 精确具名批号；整批使用scope=WHOLE |
-| machine_no,paper_inspector,paper_submitter,paper_machine_operator,paper_handover_by | 文字精确 |
-| paper_unit_text | 仅片；其他值422 |
-| sample_project,sample_model,sample_spec,sample_size,sample_side | 结构化值精确 |
-| keyword | 当前sample_raw、共享号或完整型号包含匹配 |
-| created_by,last_saved_by | 系统用户ID |
-| unassigned | true只未归组，false只已归组，省略两者 |
-| incomplete | true只缺项，false只完整，省略两者 |
-| sample_project_missing | true项目未知/空白，false项目非空，省略两者；用于待拆解清单 |
-| date_basis | inspection_day默认；或created_at |
-| from,to | 可仅一端，按1.4；未知业务日不落入区间 |
+| 参数                                                                                | 语义                                                       |
+| ----------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| product_lot_id,operation_group_id,operation_id                                      | 精确归属；多个条件必须一致，否则无结果                     |
+| inspection_kind                                                                     | NORMAL/SAMPLING/ALL，默认ALL                               |
+| state                                                                               | ACTIVE/CANCELLED，默认两者均列                             |
+| scope                                                                               | WHOLE/SPLIT                                                |
+| batch_no                                                                            | 精确具名批号；整批使用scope=WHOLE                          |
+| machine_no,paper_inspector,paper_submitter,paper_machine_operator,paper_handover_by | 文字精确                                                   |
+| paper_unit_text                                                                     | 仅片；其他值422                                            |
+| sample_project,sample_model,sample_spec,sample_size,sample_side                     | 结构化值精确                                               |
+| keyword                                                                             | 当前sample_raw、共享号或完整型号包含匹配                   |
+| created_by,last_saved_by                                                            | 系统用户ID                                                 |
+| unassigned                                                                          | true只未归组，false只已归组，省略两者                      |
+| incomplete                                                                          | true只缺项，false只完整，省略两者                          |
+| sample_project_missing                                                              | true项目未知/空白，false项目非空，省略两者；用于待拆解清单 |
+| date_basis                                                                          | inspection_day默认；或created_at                           |
+| from,to                                                                             | 可仅一端，按1.4；未知业务日不落入区间                      |
 
 data除分页字段外含unknown_day_count，指满足其他非时间条件但业务日未知的单数，忽略日期区间；不将这些单算进items/total的已知日期区间。未给from/to则未知日单正常列入列表。GET详情无查询参数，200 Detail，不受默认类型筛选限制。
 
 ### 7.7 历史与差异
 
-| 方法/路径 | 参数 | 响应data |
-|---|---|---|
-| GET /submissions/{id}/revisions | page,page_size | 分页Revision，完整content；按revision_no倒序 |
-| GET /submissions/{id}/revisions/{revision_id} | 无 | {revision,derived,issues} |
-| GET /submissions/{id}/diff | from,to，两个明确Revision ID必填 | from_revision_id,to_revision_id,changes |
+| 方法/路径                                     | 参数                             | 响应data                                     |
+| --------------------------------------------- | -------------------------------- | -------------------------------------------- |
+| GET /submissions/{id}/revisions               | page,page_size                   | 分页Revision，完整content；按revision_no倒序 |
+| GET /submissions/{id}/revisions/{revision_id} | 无                               | {revision,derived,issues}                    |
+| GET /submissions/{id}/diff                    | from,to，两个明确Revision ID必填 | from_revision_id,to_revision_id,changes      |
 
 changes为 `{path,old,new}` 数组，路径对应content字段；lines按seq比较，变化条目整数组比较，新增/删除以null表达。历史版本必须属于指定单；跨单或不存在404。from/to相同允许changes=[]。不提供current等会漂移的别名。历史中派生提示使用该版schema和模板，不让新模板改变旧版解释。
 
@@ -570,25 +570,25 @@ metric=save_actions时by只能saved_by，from/to必须系统秒精度时点且�
 
 ## 9. 报告
 
-### 9.1 GET /reports/product-lots/{id}
+### 9.1 GET /reports/product-lots/
 
 参数inspection_kind=NORMAL默认/SAMPLING/ALL；as_of可省略为当前系统快照，若给必须带时区秒精度且不晚于现在；through_event_id可选，但给时必须同时给as_of，且上界须为该截止视图的完整已提交事务末事件。不能传from/to/date_basis。
 
 200 data：
 
-| 字段 | 含义 |
-|---|---|
-| product_lot | 截止视图的生产批身份快照 |
-| groups | 当时已存在的组，按operation_code/inspection_kind/id排序 |
-| as_of,through_event_id,history_started_at | 系统截止时点、原子事件上界、历史起点 |
-| included_revision_ids | 实际参与有效小计的内容版本ID集合 |
-| notes | 类型、口径和限制说明 |
+| 字段                                      | 含义                                                    |
+| ----------------------------------------- | ------------------------------------------------------- |
+| product_lot                               | 截止视图的生产批身份快照                                |
+| groups                                    | 当时已存在的组，按operation_code/inspection_kind/id排序 |
+| as_of,through_event_id,history_started_at | 系统截止时点、原子事件上界、历史起点                    |
+| included_revision_ids                     | 实际参与有效小计的内容版本ID集合                        |
+| notes                                     | 类型、口径和限制说明                                    |
 
 每个groups元素 `{group,submissions,progress,subtotal}`；submissions为当时各单Detail（含取消），progress为6.2的登记/有效/取消/缺项数，subtotal为8.3分组统计单元，只计当时ACTIVE且已归组版本。ALL逐组分类型，没有产品总计。未归组单不属于某生产批，不能猜测纳入。
 
 历史按系统保存/状态事件回放，不按纸面日期筛今天版本。后续更正/绑定/取消/关闭和目录改名均不能改变旧时点。as_of早于history_started_at422 history_unavailable；该时点生产批不存在404。返回的as_of与through_event_id原样回传可复验同秒视图。无持久报告快照写入口，不假定后序曾阅读某版本。
 
-### 9.2 GET /reports/operations/{operation_id}
+### 9.2 GET /reports/operations/
 
 from/to两端必填；date_basis默认inspection_day，也可created_at；可选product_lot_id、inspection_kind=NORMAL默认/SAMPLING/ALL、page/page_size。操作工序ID存在但无记录200空结果，不存在404。格式/逆序422，缺端点400。
 

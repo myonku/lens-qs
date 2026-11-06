@@ -1,0 +1,14 @@
+code,label,sort_no,active
+一次加硬,一次加硬,10,true
+一次固化,一次固化,20,true
+一次清洗,一次清洗,30,true
+PhCh旋涂变色,PhCh旋涂变色,40,true
+紫外线保护,紫外线保护,50,true
+二次加硬,二次加硬,60,true
+二次固化,二次固化,70,true
+ARC镀膜,ARC镀膜,80,true
+DMC打码,DMC打码,90,true
+CNC裁型,CNC裁型,100,true
+Logo打标,Logo打标,110,true
+二次清洗,二次清洗,120,true
+OQC+包装,OQC+包装,130,true

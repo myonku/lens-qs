@@ -156,6 +156,18 @@ func (it Item) MarshalJSON() ([]byte, error) {
 	}{alias(it), meta})
 }
 func (s *Store) writeItem(w *store.WriteTx, it *Item, before any) (*Item, error) {
+	result, err := s.persistItem(w, it, before)
+	if err != nil {
+		return nil, err
+	}
+	if err = w.Commit(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// persistItem shares validation and audit behavior within a caller-owned transaction.
+func (s *Store) persistItem(w *store.WriteTx, it *Item, before any) (*Item, error) {
 	if !validCategory(it.Category) {
 		return nil, httpx.Validation("invalid_dictionary_category", nil)
 	}
@@ -192,9 +204,6 @@ func (s *Store) writeItem(w *store.WriteTx, it *Item, before any) (*Item, error)
 		return nil, store.StorageError(e)
 	}
 	if e = w.Event("maintain", "dict_item", it.ID, before, it, nil); e != nil {
-		return nil, e
-	}
-	if e = w.Commit(); e != nil {
 		return nil, e
 	}
 	return it, nil

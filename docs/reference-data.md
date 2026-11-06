@@ -6,7 +6,7 @@
 
 | 类别 | 初始候选值 | 用途 |
 |---|---|---|
-| inspection_operation | GENERAL（一般检验）、一次加硬、二次加硬 | 工序目录，可维护，不限定真实生产路线 |
+| inspection_operation | 一次加硬、一次固化、一次清洗、PhCh旋涂变色、紫外线保护、二次加硬、二次固化、ARC镀膜、DMC打码、CNC裁型、Logo打标、二次清洗、OQC+包装 | 工序目录，可维护，不限定真实生产路线 |
 | sample_project | M1、M2 | 项目，独立录入，不能从下面的图号清单反推 |
 | sample_model | VID1、VID1 Rx、VID2 | 型号片段 |
 | sample_spec | S1、S2 | 规格 |
@@ -15,6 +15,8 @@
 | sample_class | MONOC、BINOC、MONOC_AND_BINOC | 可选参考属性，最后一项显示为 MONOC & BINOC |
 
 以上为候选值，不是样品内容白名单。字典别名可辅助匹配；没有明确别名时不把 ND2 猜成 VID2。完整身份型号是另一独立字段，不通过拼接这些维度自动生成。
+
+工序清单以 [`backend/data/inspection_operations.csv`](../backend/data/inspection_operations.csv) 为准，由后端启动时同步；维护规则见[后端说明](../backend/README.md#工序映射表与启动同步)。旧库 GENERAL 保留兼容，不在新清单中自动新增。
 
 ## 2. 参考部件号
 

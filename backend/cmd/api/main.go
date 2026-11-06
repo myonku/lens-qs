@@ -54,6 +54,11 @@ func main() {
 	}, cfg.DBDriver)
 
 	dictStore := dictionary.NewStore(db, cfg.DBDriver)
+	changed, err := dictStore.SyncOperationsFile(ctx, cfg.OperationCatalogFile)
+	if err != nil {
+		log.Fatalf("[fatal] 工序映射同步失败: %v", err)
+	}
+	log.Printf("[info] 工序映射同步完成: %d 项变更", changed)
 
 	engine := server.Build(server.Deps{
 		Cfg:       cfg,

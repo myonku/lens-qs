@@ -47,6 +47,9 @@ func main() {
 	dictStore := dictionary.NewStore(db, cfg.DBDriver)
 
 	if !*drawingsOnly {
+		if _, err := dictStore.SyncOperationsFile(ctx, cfg.OperationCatalogFile); err != nil {
+			log.Fatalf("[fatal] 工序映射同步失败: %v", err)
+		}
 		if err := seedDict(ctx, dictStore); err != nil {
 			log.Fatalf("[fatal] 写入字典失败: %v", err)
 		}
@@ -66,12 +69,6 @@ func seedDict(ctx context.Context, st *dictionary.Store) error {
 		sortNo   int
 	}
 	items := []item{
-		// 工序（检验工序）：表单的第一列，也是"找到自己工序所在表单"的依据。
-		// 工序引用稳定字典 ID，后续可以维护。
-		{dictionary.CategoryInspectionOp, "GENERAL", "一般检验", 0},
-		{dictionary.CategoryInspectionOp, "一次加硬", "一次加硬", 10},
-		{dictionary.CategoryInspectionOp, "二次加硬", "二次加硬", 20},
-
 		// 样品信息：项目（M1/M2）必须可录入（B-7）
 		{dictionary.CategorySampleProject, "M1", "M1", 10},
 		{dictionary.CategorySampleProject, "M2", "M2", 20},
