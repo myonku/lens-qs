@@ -1,6 +1,6 @@
 # 后端工程：本机开发与联调
 
-当前后端数据库结构版本为 0008，默认在 Windows 本机运行，日常使用 SQLite，仅作开发测试。业务依据为[需求](../docs/requirements.md)、[设计](../docs/design.md)、[公共设计](../docs/common-design.md)、[字段](../docs/fields.md)与[API](../docs/api.md)。重建和本机装配已经完成，历史节点及验证证据入口见[项目历史](../docs/history.md)。真实域内前端联调及正式部署参数留待后续确定。
+当前后端数据库结构版本为 0009，默认在 Windows 本机运行，日常使用 SQLite，仅作开发测试。业务依据为[需求](../docs/requirements.md)、[设计](../docs/design.md)、[公共设计](../docs/common-design.md)、[字段](../docs/fields.md)与[API](../docs/api.md)。重建和本机装配已经完成，历史节点及验证证据入口见[项目历史](../docs/history.md)。真实域内前端联调及正式部署参数留待后续确定。
 
 ## 接口范围
 
@@ -12,7 +12,7 @@
 
 ## 本机启动与前端联调
 
-日常在 `backend` 目录运行，本机 `.env` 配置 `APP_ENV=dev`、`APP_ADDR=:8080`、`DB_DRIVER=sqlite`、`DB_DSN=./data/lens.db`。已有本机库已显式完成 0006 → 0008 重建，无需重复初始化、seed 或创建账号；使用原有账户密码登录。
+日常在 `backend` 目录运行，本机 `.env` 配置 `APP_ENV=dev`、`APP_ADDR=:8080`、`DB_DRIVER=sqlite`、`DB_DSN=./data/lens.db`。已有 0008 本机库须按下文显式升级至 0009，使用原有账户密码登录。
 
 ```powershell
 cd D:\Pr\lens-qs\backend
@@ -83,7 +83,7 @@ go run ./cmd/migrate -status
 
 输出驱动、无凭据目标位置、迁移、表名、数量、配置冲突、数据摘要与目标指纹，不输出密码哈希或 DSN。SQLite 状态连接使用 mode=ro，不创建缺失数据库或改变源库 journal 模式。
 
-已知完整 `0006` 使用显式测试数据重建；已知 `0007` 使用非破坏性升级，最终均为 `0008`。早期版本、未知/缺损结构、迁移名称冲突、部门悬空引用、冲突工序配置和非法人工元数据拒绝。`0001～0007` 原文件不改写；首次引入旧迁移摘要的 provenance 明确为名称/结构基线，不宣称过去验证过文件哈希。0006 重建中的结构转换、账号/配置保全及维护回执同事务提交。
+已知完整 `0006` 使用显式测试数据重建；已知 `0007` 或 `0008` 使用非破坏性升级，最终均为 `0009`。早期版本、未知/缺损结构、迁移名称冲突、部门悬空引用、冲突工序配置和非法人工元数据拒绝。`0001～0007` 原文件不改写；首次引入旧迁移摘要的 provenance 明确为名称/结构基线，不宣称过去验证过文件哈希。0006 重建中的结构转换、账号/配置保全及维护回执同事务提交。
 
 SQLite 先停写，生成并重新打开一致备份，核对数据摘要：
 
@@ -92,7 +92,7 @@ New-Item -ItemType Directory -Force backups | Out-Null
 go run ./cmd/backup -out backups/before.db -receipt backups/verified.json
 # 使用 status 输出的当前指纹，不要复用其他目标的指纹。
 go run ./cmd/migrate -rebuild-test-data -target-fingerprint <fingerprint> -verified-backup backups/verified.json
-# 已知 0007 改用下列命令；不清除已有业务、会话或人工配置：
+# 已知 0007 或 0008 改用下列命令：
 go run ./cmd/migrate -upgrade -target-fingerprint <fingerprint> -verified-backup backups/verified.json
 ```
 
@@ -104,6 +104,8 @@ PostgreSQL 使用匹配服务端版本的 `pg_dump --format=custom` 做一致备
 
 0008 为图号增加可空 is_rx 和序号唯一约束，并增加筛选投影/索引及共享目录版本。升级保留旧 false/true 值，不猜测其原始含义；新资料未提供 Rx 证据时保持 null。旧图号序号重复会使整次升级回滚，须先核对冲突，不能静默合并。普通 API/容器启动不会执行重建或升级；仅在空用户库按可选配置引导管理员。
 
+0009 新增用户所属工序 `operation_id`。升级不推断旧账户的所属工序，管理员可在用户管理接口为普通账户分配已启用工序，账户分配后才能填报。升级会清除普通账户已有的填报幂等缓存。
+
 重建/升级失败整体回滚；回退依赖停写时的完整备份及匹配的旧程序/配置，不提供有损 down 迁移。开发验证包含恢复后重开服务并复验历史报告。新版本产生真实资料后，不得用切换前备份直接覆盖。
 
 ## 当前结构的测试数据重置
@@ -113,7 +115,7 @@ go run ./cmd/reset-testdata  # 只读预览
 go run ./cmd/reset-testdata -confirm-test-data -target-fingerprint <preview-fingerprint>
 ```
 
-必须先停写和备份。仅接受匹配的 `0008`，清检验业务/领域事件、会话、领域幂等及自动缓存，保留账号、目录、模板、人工确认和共享审计。不会清除人工缓存或改密码。
+必须先停写和备份。仅接受匹配的 `0009`，清检验业务/领域事件、会话、领域幂等及自动缓存，保留账号、目录、模板、人工确认和共享审计。不会清除人工缓存或改密码。
 
 ## 核心实现边界
 

@@ -6,6 +6,41 @@ import (
 	"testing"
 )
 
+func TestUpgradeFromEightLeavesUsersUnassigned(t *testing.T) {
+	db, driver := FixtureDB(t, false)
+	ctx := context.Background()
+	if _, err := migrate(ctx, db, driver, 8, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO users(id,username,password_hash,created_at,updated_at) VALUES('u','legacy','original-hash','2026-11-05T00:00:00Z','2026-11-05T00:00:00Z')`,
+		`INSERT INTO v2_idempotency_requests VALUES('u','old','fingerprint',201,'{}','2026-11-05T00:00:00Z','2030-01-01T00:00:00Z')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inv, err := Inspect(ctx, db, driver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = Upgrade(ctx, db, driver, inv.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if err = CheckReady(ctx, db, driver); err != nil {
+		t.Fatal(err)
+	}
+	var hash string
+	var operationID *string
+	if err = db.QueryRow(`SELECT password_hash,operation_id FROM users WHERE id='u'`).Scan(&hash, &operationID); err != nil || hash != "original-hash" || operationID != nil {
+		t.Fatal("unexpected migrated user", err)
+	}
+	var count int
+	if err = db.Get(&count, `SELECT COUNT(*) FROM v2_idempotency_requests WHERE actor_id='u'`); err != nil || count != 0 {
+		t.Fatal("old retry survived migration", err)
+	}
+}
+
 func TestG2UpgradePreservesDataAndRollback(t *testing.T) {
 	for _, duplicate := range []bool{false, true} {
 		t.Run(map[bool]string{false: "preserve", true: "rollback"}[duplicate], func(t *testing.T) {

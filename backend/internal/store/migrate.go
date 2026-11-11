@@ -20,6 +20,8 @@ import (
 	"github.com/myonku/lens-qs-api/migrations"
 )
 
+const LatestSchemaVersion = 9
+
 // Initialize is the only empty-database entry; known old databases must use
 // Rebuild with an inventory fingerprint and verified backup at the CLI boundary.
 func Initialize(ctx context.Context, db *sqlx.DB, driver string) error {
@@ -27,7 +29,7 @@ func Initialize(ctx context.Context, db *sqlx.DB, driver string) error {
 	if err != nil {
 		return err
 	}
-	if len(rows) == 8 {
+	if len(rows) == LatestSchemaVersion {
 		return CheckReady(ctx, db, driver)
 	}
 	if len(rows) > 0 {
@@ -44,7 +46,7 @@ func Initialize(ctx context.Context, db *sqlx.DB, driver string) error {
 	if n != 0 {
 		return fmt.Errorf("initialize refuses unrecognized tables")
 	}
-	_, err = migrate(ctx, db, driver, 8, true)
+	_, err = migrate(ctx, db, driver, LatestSchemaVersion, true)
 	return err
 }
 func migrate(ctx context.Context, db *sqlx.DB, driver string, limit int, explicit bool, expectedData ...string) ([]string, error) {
@@ -219,8 +221,8 @@ func CheckReady(ctx context.Context, db *sqlx.DB, driver string) error {
 	if err != nil {
 		return err
 	}
-	if len(rows) != 8 {
-		return fmt.Errorf("expected schema 0008; use explicit initialization/rebuild/upgrade")
+	if len(rows) != LatestSchemaVersion {
+		return fmt.Errorf("expected schema %04d; use explicit initialization/rebuild/upgrade", LatestSchemaVersion)
 	}
 	for i, m := range rows {
 		if m.Version != i+1 {
@@ -259,7 +261,7 @@ func CheckReady(ctx context.Context, db *sqlx.DB, driver string) error {
 		}
 		rows.Close()
 	}
-	for _, q := range []string{`SELECT department,account_type FROM users LIMIT 0`, `SELECT state,current_revision_id,last_saved_by FROM inspection_submissions LIMIT 0`, `SELECT content_json,content_schema_version,saved_actor_name FROM submission_revisions LIMIT 0`, `SELECT operation_label,created_by FROM operation_groups LIMIT 0`, `SELECT transaction_id,actor_name FROM business_events LIMIT 0`, `SELECT kind,direction,quantity,reason FROM quantity_changes LIMIT 0`, `SELECT operation_group_id,batch_key,submission_id FROM submission_slots LIMIT 0`, `SELECT fingerprint,response_status,response_body,expires_at FROM v2_idempotency_requests LIMIT 0`, `SELECT parser_version,dictionary_version,needs_review FROM sample_parse_cache LIMIT 0`, `SELECT code,name FROM units LIMIT 0`, `SELECT category,code,meta FROM dict_items LIMIT 0`, `SELECT schema_version,layout FROM form_templates LIMIT 0`} {
+	for _, q := range []string{`SELECT department,account_type,operation_id FROM users LIMIT 0`, `SELECT state,current_revision_id,last_saved_by FROM inspection_submissions LIMIT 0`, `SELECT content_json,content_schema_version,saved_actor_name FROM submission_revisions LIMIT 0`, `SELECT operation_label,created_by FROM operation_groups LIMIT 0`, `SELECT transaction_id,actor_name FROM business_events LIMIT 0`, `SELECT kind,direction,quantity,reason FROM quantity_changes LIMIT 0`, `SELECT operation_group_id,batch_key,submission_id FROM submission_slots LIMIT 0`, `SELECT fingerprint,response_status,response_body,expires_at FROM v2_idempotency_requests LIMIT 0`, `SELECT parser_version,dictionary_version,needs_review FROM sample_parse_cache LIMIT 0`, `SELECT code,name FROM units LIMIT 0`, `SELECT category,code,meta FROM dict_items LIMIT 0`, `SELECT schema_version,layout FROM form_templates LIMIT 0`} {
 		rows, e := db.QueryxContext(ctx, q)
 		if e != nil {
 			return fmt.Errorf("incompatible foundation shape")

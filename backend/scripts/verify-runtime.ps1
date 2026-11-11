@@ -56,7 +56,7 @@ try {
     $after = Inventory
     if ($before.fingerprint -ne $after.fingerprint) { throw 'Restart changed persisted data' }
     if ($after.version -ne 8) { throw 'Unexpected schema version' }
-    Write-Output 'PASS: image HTTP lifecycle, history, cancellation, graceful stop and restart preservation (schema 0008)'
+    Write-Output 'PASS: image HTTP lifecycle, history, cancellation, graceful stop and restart preservation (schema 0009)'
 } finally {
     & docker rm -f $api 2>$null | Out-Null
     & docker volume rm $volume | Out-Null

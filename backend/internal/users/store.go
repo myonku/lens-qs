@@ -18,6 +18,7 @@ import (
 
 // User 对应数据库表 users。
 type User struct {
+	OperationID    *string `db:"operation_id" json:"operation_id"`
 	AccountType    string  `db:"account_type" json:"account_type"`
 	ID             string  `db:"id" json:"id"`
 	Username       string  `db:"username" json:"username"`
@@ -51,7 +52,7 @@ func (s *Store) rebind(q string) string { return s.db.Rebind(q) }
 
 const columns = `id, username, display_name, employee_no, department, password_hash,
 	is_admin, account_type, must_change_pwd, status, failed_attempts, locked_until, last_login_at,
-	created_at, updated_at`
+	created_at, updated_at, operation_id`
 
 // GetByID 按主键取用户。
 func (s *Store) GetByID(ctx context.Context, userID string) (*User, error) {
@@ -115,6 +116,7 @@ func (s *Store) Count(ctx context.Context) (int, error) {
 
 // CreateInput 是创建用户的输入。
 type CreateInput struct {
+	OperationID   *string
 	AccountType   string
 	Username      string
 	Password      string
@@ -162,6 +164,7 @@ func (s *Store) create(ctx context.Context, in CreateInput, onlyEmpty bool) (*Us
 	now := store.FormatTime(time.Now())
 	u := &User{
 		AccountType:   in.AccountType,
+		OperationID:   clean(in.OperationID),
 		ID:            id.New(),
 		Username:      username,
 		DisplayName:   name,
@@ -191,7 +194,10 @@ func (s *Store) create(ctx context.Context, in CreateInput, onlyEmpty bool) (*Us
 	if w.Actor.ID != "" && !w.Actor.Admin {
 		return nil, httpx.Forbidden("admin required")
 	}
-	query, args, err := sqlx.Named(`INSERT INTO users (`+columns+`) VALUES (:id,:username,:display_name,:employee_no,:department,:password_hash,:is_admin,:account_type,:must_change_pwd,:status,:failed_attempts,:locked_until,:last_login_at,:created_at,:updated_at)`, u)
+	if err := validateOperation(w, u.OperationID); err != nil {
+		return nil, err
+	}
+	query, args, err := sqlx.Named(`INSERT INTO users (`+columns+`) VALUES (:id,:username,:display_name,:employee_no,:department,:password_hash,:is_admin,:account_type,:must_change_pwd,:status,:failed_attempts,:locked_until,:last_login_at,:created_at,:updated_at,:operation_id)`, u)
 	if err != nil {
 		return nil, err
 	}
@@ -215,6 +221,7 @@ func (s *Store) create(ctx context.Context, in CreateInput, onlyEmpty bool) (*Us
 
 // UpdateInput 是修改用户的输入（nil 表示不改）。
 type UpdateInput struct {
+	OperationID httpx.Optional[string]
 	AccountType *string
 	DisplayName *string
 	EmployeeNo  httpx.Optional[string]
@@ -246,6 +253,12 @@ func (s *Store) Update(ctx context.Context, userID string, in UpdateInput) (*Use
 		return nil, httpx.NotFound("用户不存在")
 	}
 	before := *u
+	if in.OperationID.Set {
+		u.OperationID = clean(in.OperationID.Value)
+		if err := validateOperation(tx, u.OperationID); err != nil {
+			return nil, err
+		}
+	}
 	if in.AccountType != nil {
 		if !validAccountType(*in.AccountType) {
 			return nil, httpx.Validation("account_type 必须为 NORMAL 或 SAMPLING", nil)
@@ -304,7 +317,7 @@ func (s *Store) Update(ctx context.Context, userID string, in UpdateInput) (*Use
 	u.UpdatedAt = store.FormatTime(time.Now())
 
 	query, args, err := sqlx.Named(`UPDATE users SET
-		display_name = :display_name, employee_no = :employee_no, department = :department,
+		display_name = :display_name, employee_no = :employee_no, department = :department, operation_id = :operation_id,
 		password_hash = :password_hash, is_admin = :is_admin, account_type = :account_type, status = :status,
 		failed_attempts = :failed_attempts, locked_until = :locked_until, updated_at = :updated_at
 		WHERE id = :id`, u)
@@ -319,7 +332,7 @@ func (s *Store) Update(ctx context.Context, userID string, in UpdateInput) (*Use
 	if _, err = tx.ExecContext(ctx, tx.Rebind(query), args...); err != nil {
 		return nil, userError(err)
 	}
-	if in.AccountType != nil || in.Password != nil || in.Status != nil && *in.Status == "disabled" {
+	if in.OperationID.Set || before.IsAdmin != u.IsAdmin || in.AccountType != nil || in.Password != nil || in.Status != nil && *in.Status == "disabled" {
 		if _, err = tx.ExecContext(ctx, tx.Rebind("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL"), nowTime(), u.ID); err != nil {
 			return nil, err
 		}
@@ -334,6 +347,18 @@ func (s *Store) Update(ctx context.Context, userID string, in UpdateInput) (*Use
 		return nil, err
 	}
 	return u, nil
+}
+
+func validateOperation(tx *store.WriteTx, operationID *string) error {
+	if operationID == nil {
+		return nil
+	}
+	var id string
+	err := tx.GetContext(tx.Context, &id, tx.Rebind(`SELECT id FROM dict_items WHERE id=? AND category='inspection_operation' AND active=1`), *operationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return httpx.Validation("operation_id 必须为已启用的检验工序 ID", map[string]string{"reason": "invalid_operation", "field": "operation_id"})
+	}
+	return err
 }
 
 func clean(s *string) *string {

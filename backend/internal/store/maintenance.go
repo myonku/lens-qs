@@ -270,13 +270,13 @@ func Rebuild(ctx context.Context, db *sqlx.DB, driver, expected string) error {
 	if expected == "" || inv.Fingerprint != expected {
 		return fmt.Errorf("target fingerprint mismatch")
 	}
-	if inv.Version == 8 {
+	if inv.Version == LatestSchemaVersion {
 		return CheckReady(ctx, db, driver)
 	}
 	if inv.Version != 6 || len(inv.Conflicts) > 0 {
 		return fmt.Errorf("rebuild requires known v6 without conflicts: %v", inv.Conflicts)
 	}
-	_, e = migrate(ctx, db, driver, 8, true, inv.DataDigest)
+	_, e = migrate(ctx, db, driver, LatestSchemaVersion, true, inv.DataDigest)
 	return e
 }
 func ResetInspection(ctx context.Context, db *sqlx.DB) error {

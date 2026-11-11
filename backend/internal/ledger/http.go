@@ -313,11 +313,13 @@ func (h HTTP) lots(c *gin.Context) {
 	h.read(c, func(ctx context.Context, q store.Reader, _ store.Snapshot) (any, error) {
 		where := " WHERE 1=1"
 		args := []any{}
-		for _, key := range []string{"shared_form_no", "sample_identity"} {
-			if c.Request.URL.Query().Has(key) {
-				where += " AND " + key + "=?"
-				args = append(args, strings.TrimSpace(c.Query(key)))
-			}
+		if c.Request.URL.Query().Has("sample_identity") {
+			where += " AND sample_identity=?"
+			args = append(args, strings.TrimSpace(c.Query("sample_identity")))
+		}
+		if formNo := strings.TrimSpace(c.Query("shared_form_no")); formNo != "" {
+			where += " AND shared_form_no LIKE ? ESCAPE '!'"
+			args = append(args, contains(formNo))
 		}
 		if c.Request.URL.Query().Has("keyword") {
 			where += " AND (shared_form_no LIKE ? ESCAPE '!' OR sample_identity LIKE ? ESCAPE '!' OR sample_raw LIKE ? ESCAPE '!')"

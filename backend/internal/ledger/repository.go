@@ -188,6 +188,9 @@ func (r *Repository) CreateLot(shared, identity string, reference Content) (Prod
 }
 func (r *Repository) CreateGroup(lotID, operationID string) (Group, error) {
 	w := r.w
+	if e := r.checkOperation(operationID); e != nil {
+		return Group{}, e
+	}
 	if _, e := readOne[ProductLot](w.Context, w, `SELECT * FROM product_lots WHERE id=?`, lotID); e != nil {
 		return Group{}, e
 	}
@@ -231,7 +234,27 @@ func (r *Repository) group(id string) (Group, error) {
 	if g.Kind != r.w.Actor.Kind {
 		return g, typeForbidden(r.w.Actor.Kind, g.Kind)
 	}
-	return g, nil
+	return g, r.checkOperation(g.OperationID)
+}
+
+func (r *Repository) checkOperation(operationID string) error {
+	actor := r.w.Actor
+	if actor.Admin || actor.OperationID != nil && *actor.OperationID == operationID {
+		return nil
+	}
+	return operationForbidden()
+}
+
+func operationForbidden() error {
+	return httpx.NewError(403, "forbidden", "当前账户无权填报此工序或记录", map[string]string{"reason": "operation_forbidden"})
+}
+
+func (r *Repository) checkUngrouped(createdBy string) error {
+	actor := r.w.Actor
+	if actor.Admin || actor.OperationID != nil && actor.ID == createdBy {
+		return nil
+	}
+	return operationForbidden()
 }
 func (r *Repository) GroupState(id string, expected int64, closed bool, reason string) (Group, error) {
 	if expected < 1 || expected > MaxQuantity {
@@ -379,6 +402,15 @@ func (r *Repository) Save(in SaveInput) (Detail, error) {
 		if s.Kind != w.Actor.Kind {
 			return Detail{}, typeForbidden(w.Actor.Kind, s.Kind)
 		}
+		if s.GroupID != nil {
+			g, e := r.group(*s.GroupID)
+			if e != nil {
+				return Detail{}, e
+			}
+			template = g.Template
+		} else if e := r.checkUngrouped(s.CreatedBy); e != nil {
+			return Detail{}, e
+		}
 		if s.State != "ACTIVE" {
 			return Detail{}, reasonConflict("submission_cancelled")
 		}
@@ -417,12 +449,16 @@ func (r *Repository) Save(in SaveInput) (Detail, error) {
 	if s.BatchNo != nil {
 		s.Scope = "SPLIT"
 	}
-	if s.GroupID != nil {
+	if s.GroupID != nil && needSlot {
 		g, e := r.group(*s.GroupID)
 		if e != nil {
 			return Detail{}, e
 		}
 		template = g.Template
+	} else if create && s.GroupID == nil {
+		if e := r.checkUngrouped(s.CreatedBy); e != nil {
+			return Detail{}, e
+		}
 	}
 	if len(in.Patch) == 0 {
 		in.Patch = []byte(`{}`)
@@ -524,6 +560,13 @@ func (r *Repository) Cancel(id string, expected int64, reason string) (Submissio
 	}
 	if s.Kind != w.Actor.Kind {
 		return s, typeForbidden(w.Actor.Kind, s.Kind)
+	}
+	if s.GroupID != nil {
+		if _, e := r.group(*s.GroupID); e != nil {
+			return s, e
+		}
+	} else if e := r.checkUngrouped(s.CreatedBy); e != nil {
+		return s, e
 	}
 	if s.State != "ACTIVE" {
 		return s, reasonConflict("submission_cancelled")

@@ -98,13 +98,13 @@ quantity 最大9007199254740991，单值和聚合必须精确；聚合超出该�
 
 | 名称           | 字段                                                                                                                                                                             |
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| User           | id,username,display_name,employee_no,department,is_admin,account_type,status,created_at,updated_at                                                                               |
+| User           | id,username,display_name,employee_no,department,operation_id,is_admin,account_type,status,created_at,updated_at                                                                  |
 | ProductLot     | id,shared_form_no,sample_identity,sample_identity_key,sample_raw,sample_project,sample_model,sample_spec,sample_size,sample_side,version,created_by,created_at                   |
 | OperationGroup | id,product_lot_id,operation_id,operation_code,operation_label,inspection_kind,template_version,reporting_state,batch_mode,version,created_by,created_at                          |
 | Submission     | id,operation_group_id,batch_no,scope,inspection_kind,state,version,current_revision_id,created_by,created_at,last_saved_by,last_saved_at,cancelled_by,cancelled_at,cancel_reason |
 | Revision       | id,submission_id,revision_no,base_revision_id,template_version,content_schema_version,content,saved_by,saved_actor_name,saved_at,reason                                          |
 
-User 的 employee_no/department 可空；account_type=NORMAL/SAMPLING，status=active/disabled。密码、密码哈希、token 哈希不返回。department 是用户部门，不能放“片”的计量单位ID。
+User 包含可空的 `operation_id`（所属检验工序的字典项 ID），登录、`/auth/me` 和用户管理接口均在 User 对象中返回该字段。employee_no/department 可空；account_type=NORMAL/SAMPLING，status=active/disabled。密码、密码哈希、token 哈希不返回。department 是用户部门，不能放“片”的计量单位ID。
 
 Submission.state=ACTIVE/CANCELLED；operation_group_id 可空；取消元信息可空；没有 draft/current 两套内容。Revision 在创建时生效且不可原地修改，base_revision_id 首版null。未归组版使用通用 template_version；绑定保存后采用目标组模板，旧版解释不变。
 
@@ -333,7 +333,9 @@ change-password正文 `{old_password,new_password}`，均非空；旧密码错40
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------- | -------- |
 | GET /users        | page,page_size,keyword；keyword匹配登录名/显示名/工号                                                                  | 分页User |
 | POST /users       | username,password必填；display_name默认空串，employee_no/department默认null，is_admin默认false，account_type默认NORMAL | 201 User |
-| PATCH /users/{id} | display_name,employee_no,department,is_admin,account_type,status,password；至少一项                                    | 200 User |
+| PATCH /users/{id} | display_name,employee_no,department,operation_id,is_admin,account_type,status,password；至少一项                       | 200 User |
+
+POST 和 PATCH 均接受 `operation_id`。非空值必须是已启用的 `inspection_operation` 字典项 ID，非法值返回 422（`details.reason=invalid_operation`）。创建省略时默认为 null。PATCH 省略时保留，传 null 或空白清空。提交工序更新会撤销目标账户的会话并清除其填报幂等缓存。
 
 username非空trim后唯一，不能PATCH改名；employee_no非空值唯一，空白归null。department为组织文字。PATCH不传保持；employee_no/department可null清空；display_name可空串但不接受null；is_admin/account_type/status/password不接受null；password是重置操作，不返回。status仅active/disabled；非法枚举422。
 
@@ -395,7 +397,7 @@ surfaces为`{code,label}`数组，固定按concave/convex/both排列，中文名
 
 ### 6.1 GET/POST /product-lots、GET /product-lots/
 
-GET列表分页，支持shared_form_no、sample_identity精确键匹配；keyword包含匹配共享号/完整型号/参考sample_raw。响应分页ProductLot。详情无查询参数，返回ProductLot，不把所有工序数量加为产品数。
+GET列表分页。`shared_form_no` 仅对表单号做包含匹配，支持输入部分或完整表单号，空白值不参与筛选。`sample_identity` 支持精确匹配，`keyword` 对共享号、完整型号和参考 `sample_raw` 做包含匹配。多个筛选参数同时传入时取交集。响应分页ProductLot。详情无查询参数，返回ProductLot，不把所有工序数量加为产品数。
 
 POST正文：
 
@@ -406,6 +408,8 @@ POST正文：
 shared_form_no/sample_identity必须非空白；其余可空，省略null。仅身份去首尾空白；sample_raw逐字保存。不传inspection_kind，生产批共享。201 data=ProductLot；重复409 product_lot_exists，带product_lot_id。不能自动覆写已有参考样品资料。无PATCH、删除或合并接口。
 
 ### 6.2 GET/POST /product-lots//operation-groups
+
+普通账户只能创建和管理所属工序的工序组，也只能在所属工序下新建（含批量）、绑定、更正或取消单据。未归组时，普通账户须已分配启用工序，且只能操作自己创建的记录。工序校验失败返回 403（`details.reason=operation_forbidden`）。管理员可操作所有工序，仍须满足 `account_type` 对应的 NORMAL 或 SAMPLING 检验类型。列表和详情可供已登录账户查询。
 
 GET可选inspection_kind=NORMAL/SAMPLING/ALL，默认ALL；返回items/total，每项含group及progress。progress为registered_count、active_count、cancelled_count、incomplete_count，统计本组全部单据当前状态；registered含取消，incomplete只计ACTIVE缺项单。没有发布数、草稿数或生产完成数。
 

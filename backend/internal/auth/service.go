@@ -73,7 +73,7 @@ func (s *Service) Login(ctx context.Context, username, plainPassword, ip, userAg
 	}
 	defer w.Close()
 	var u users.User
-	e = w.GetContext(w.Context, &u, w.Rebind(`SELECT id,username,display_name,employee_no,department,password_hash,is_admin,account_type,must_change_pwd,status,failed_attempts,locked_until,last_login_at,created_at,updated_at FROM users WHERE username=?`), username)
+	e = w.GetContext(w.Context, &u, w.Rebind(`SELECT id,username,display_name,employee_no,department,password_hash,is_admin,account_type,must_change_pwd,status,failed_attempts,locked_until,last_login_at,created_at,updated_at,operation_id FROM users WHERE username=?`), username)
 	if e != nil && e != sql.ErrNoRows {
 		return nil, e
 	}

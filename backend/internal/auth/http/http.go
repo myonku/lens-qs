@@ -137,6 +137,7 @@ func (h *Handler) listUsers(c *gin.Context) {
 }
 
 type createUserReq struct {
+	OperationID *string                `json:"operation_id"`
 	AccountType httpx.Optional[string] `json:"account_type"`
 	Username    string                 `json:"username" binding:"required"`
 	Password    string                 `json:"password" binding:"required"`
@@ -184,6 +185,7 @@ func (h *Handler) createUser(c *gin.Context) {
 	}
 	u, err := h.users.Create(c.Request.Context(), users.CreateInput{
 		AccountType:   accountType,
+		OperationID:   req.OperationID,
 		Username:      req.Username,
 		Password:      req.Password,
 		DisplayName:   name,
@@ -200,6 +202,7 @@ func (h *Handler) createUser(c *gin.Context) {
 }
 
 type updateUserReq struct {
+	OperationID httpx.Optional[string] `json:"operation_id"`
 	AccountType httpx.Optional[string] `json:"account_type"`
 	DisplayName httpx.Optional[string] `json:"display_name"`
 	EmployeeNo  httpx.Optional[string] `json:"employee_no"`
@@ -215,12 +218,13 @@ func (h *Handler) updateUser(c *gin.Context) {
 		httpx.Fail(c, err)
 		return
 	}
-	if !req.AccountType.Set && !req.DisplayName.Set && !req.EmployeeNo.Set && !req.Department.Set && !req.IsAdmin.Set && !req.Status.Set && !req.Password.Set || req.AccountType.Set && req.AccountType.Value == nil || req.DisplayName.Set && req.DisplayName.Value == nil || req.IsAdmin.Set && req.IsAdmin.Value == nil || req.Status.Set && req.Status.Value == nil || req.Password.Set && req.Password.Value == nil {
+	if !req.OperationID.Set && !req.AccountType.Set && !req.DisplayName.Set && !req.EmployeeNo.Set && !req.Department.Set && !req.IsAdmin.Set && !req.Status.Set && !req.Password.Set || req.AccountType.Set && req.AccountType.Value == nil || req.DisplayName.Set && req.DisplayName.Value == nil || req.IsAdmin.Set && req.IsAdmin.Value == nil || req.Status.Set && req.Status.Value == nil || req.Password.Set && req.Password.Value == nil {
 		httpx.Fail(c, httpx.BadRequest("empty patch or invalid null"))
 		return
 	}
 	targetID := c.Param("id")
 	u, err := h.users.Update(c.Request.Context(), targetID, users.UpdateInput{AccountType: req.AccountType.Value,
+		OperationID: req.OperationID,
 		DisplayName: req.DisplayName.Value,
 		EmployeeNo:  req.EmployeeNo,
 		Department:  req.Department,

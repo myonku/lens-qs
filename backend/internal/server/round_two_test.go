@@ -103,6 +103,56 @@ func (f *apiFixture) lot() ledger.ProductLot {
 	decode(f.t, f.call("POST", "/product-lots", `{"shared_form_no":" QS-001 ","sample_identity":" Model  X ","sample_raw":"  reference  "}`, 201).Data, &lot)
 	return lot
 }
+
+func TestUserOperationPermissions(t *testing.T) {
+	f := newAPI(t)
+	a, b := f.op("A"), f.op("B")
+	lot := f.lot()
+	groupA, groupB := f.group(lot.ID, a, f.token), f.group(lot.ID, b, f.token)
+	sampling := f.group(lot.ID, a, f.sampling)
+	f.call("POST", "/users", `{"username":"invalid-op","password":"valid-password","operation_id":"missing"}`, 422)
+
+	var user users.User
+	decode(t, f.call("POST", "/users", fmt.Sprintf(`{"username":"inspector","password":"valid-password","operation_id":%q}`, a), 201).Data, &user)
+	if user.OperationID == nil || *user.OperationID != a {
+		t.Fatal("missing operation assignment", user.OperationID)
+	}
+	login := func() string {
+		var res struct {
+			Token string     `json:"token"`
+			User  users.User `json:"user"`
+		}
+		decode(t, f.call("POST", "/auth/login", `{"username":"inspector","password":"valid-password"}`, 200).Data, &res)
+		return res.Token
+	}
+	token := login()
+	staff := func(method, path, body string, status int) apiResponse {
+		f.n++
+		return f.request(method, "/api/v2"+path, body, token, fmt.Sprint(f.n), status)
+	}
+	create := func(groupID string) string {
+		return fmt.Sprintf(`{"operation_group_id":%q,"content":{}}`, groupID)
+	}
+	staff("POST", "/product-lots/"+lot.ID+"/operation-groups", fmt.Sprintf(`{"operation_id":%q}`, b), 403)
+	staff("POST", "/submissions", create(groupB.ID), 403)
+	staff("POST", "/submissions", create(sampling.ID), 403)
+	f.call("POST", "/submissions", create(sampling.ID), 403)
+	var own ledger.Detail
+	decode(t, staff("POST", "/submissions", create(groupA.ID), 201).Data, &own)
+	other := f.save(groupB.ID, "", "{}")
+	staff("PATCH", "/submissions/"+other.Submission.ID, `{"expected_version":1,"patch":{"remark":"forbidden"}}`, 403)
+	staff("POST", "/submissions/"+other.Submission.ID+"/cancel", `{"expected_version":1,"reason":"forbidden"}`, 403)
+	staff("POST", "/submissions/batch", fmt.Sprintf(`{"items":[%s,%s]}`, create(groupB.ID), create(groupA.ID)), 403)
+
+	var draft ledger.Detail
+	decode(t, staff("POST", "/submissions", `{"content":{}}`, 201).Data, &draft)
+	staff("PATCH", "/submissions/"+draft.Submission.ID, fmt.Sprintf(`{"expected_version":1,"operation_group_id":%q}`, groupB.ID), 403)
+	f.call("PATCH", "/users/"+user.ID, `{"operation_id":null}`, 200)
+	staff("GET", "/auth/me", "", 401)
+	token = login()
+	staff("PATCH", "/submissions/"+own.Submission.ID, `{"expected_version":1,"patch":{"remark":"forbidden"}}`, 403)
+	staff("POST", "/submissions", `{"content":{}}`, 403)
+}
 func (f *apiFixture) op(code string) string {
 	var d dictionary.Item
 	decode(f.t, f.call("POST", "/dict/items", fmt.Sprintf(`{"category":"inspection_operation","code":%q,"label":%q}`, code, "工序"+code), 200).Data, &d)

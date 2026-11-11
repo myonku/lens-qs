@@ -39,7 +39,7 @@ func main() {
 		fmt.Println(string(b))
 		return
 	}
-	if *target == "" || *target != inv.Fingerprint || inv.Version != 8 {
+	if *target == "" || *target != inv.Fingerprint || inv.Version != store.LatestSchemaVersion {
 		log.Fatal("目标指纹或结构不符")
 	}
 	if e = store.ResetInspection(ctx, db); e != nil {
