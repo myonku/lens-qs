@@ -147,10 +147,20 @@ func TestUserOperationPermissions(t *testing.T) {
 	var draft ledger.Detail
 	decode(t, staff("POST", "/submissions", `{"content":{}}`, 201).Data, &draft)
 	staff("PATCH", "/submissions/"+draft.Submission.ID, fmt.Sprintf(`{"expected_version":1,"operation_group_id":%q}`, groupB.ID), 403)
-	f.call("PATCH", "/users/"+user.ID, `{"operation_id":null}`, 200)
+	f.call("PATCH", "/users/"+user.ID, fmt.Sprintf(`{"operation_ids":[%q,"missing"]}`, a), 422)
+	staff("GET", "/auth/me", "", 200)
+	var updated users.User
+	decode(t, f.call("PATCH", "/users/"+user.ID, fmt.Sprintf(`{"operation_ids":[%q,%q]}`, a, b), 200).Data, &updated)
+	if len(updated.OperationIDs) != 2 {
+		t.Fatal("expected two assigned operations", updated.OperationIDs)
+	}
+	token = login()
+	staff("PATCH", "/submissions/"+own.Submission.ID, `{"expected_version":1,"patch":{"remark":"allowed in A"}}`, 200)
+	staff("PATCH", "/submissions/"+other.Submission.ID, `{"expected_version":1,"patch":{"remark":"allowed in B"}}`, 200)
+	f.call("PATCH", "/users/"+user.ID, `{"operation_ids":[]}`, 200)
 	staff("GET", "/auth/me", "", 401)
 	token = login()
-	staff("PATCH", "/submissions/"+own.Submission.ID, `{"expected_version":1,"patch":{"remark":"forbidden"}}`, 403)
+	staff("PATCH", "/submissions/"+own.Submission.ID, `{"expected_version":2,"patch":{"remark":"forbidden"}}`, 403)
 	staff("POST", "/submissions", `{"content":{}}`, 403)
 }
 func (f *apiFixture) op(code string) string {

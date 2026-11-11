@@ -19,7 +19,7 @@ func main() {
 	status := flag.Bool("status", false, "read-only inventory")
 	initialize := flag.Bool("initialize", false, "initialize an empty database")
 	rebuild := flag.Bool("rebuild-test-data", false, "explicitly rebuild known v6 inspection test data")
-	upgrade := flag.Bool("upgrade", false, "explicit non-destructive upgrade from schema 7 or 8")
+	upgrade := flag.Bool("upgrade", false, "explicit non-destructive upgrade from schema 7, 8 or 9")
 	target := flag.String("target-fingerprint", "", "fingerprint from status")
 	backup := flag.String("verified-backup", "", "path to restored-and-verified backup receipt")
 	flag.Parse()

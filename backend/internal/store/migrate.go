@@ -20,7 +20,7 @@ import (
 	"github.com/myonku/lens-qs-api/migrations"
 )
 
-const LatestSchemaVersion = 9
+const LatestSchemaVersion = 10
 
 // Initialize is the only empty-database entry; known old databases must use
 // Rebuild with an inventory fingerprint and verified backup at the CLI boundary.
@@ -261,7 +261,7 @@ func CheckReady(ctx context.Context, db *sqlx.DB, driver string) error {
 		}
 		rows.Close()
 	}
-	for _, q := range []string{`SELECT department,account_type,operation_id FROM users LIMIT 0`, `SELECT state,current_revision_id,last_saved_by FROM inspection_submissions LIMIT 0`, `SELECT content_json,content_schema_version,saved_actor_name FROM submission_revisions LIMIT 0`, `SELECT operation_label,created_by FROM operation_groups LIMIT 0`, `SELECT transaction_id,actor_name FROM business_events LIMIT 0`, `SELECT kind,direction,quantity,reason FROM quantity_changes LIMIT 0`, `SELECT operation_group_id,batch_key,submission_id FROM submission_slots LIMIT 0`, `SELECT fingerprint,response_status,response_body,expires_at FROM v2_idempotency_requests LIMIT 0`, `SELECT parser_version,dictionary_version,needs_review FROM sample_parse_cache LIMIT 0`, `SELECT code,name FROM units LIMIT 0`, `SELECT category,code,meta FROM dict_items LIMIT 0`, `SELECT schema_version,layout FROM form_templates LIMIT 0`} {
+	for _, q := range []string{`SELECT department,account_type,operation_id FROM users LIMIT 0`, `SELECT user_id,operation_id FROM user_operations LIMIT 0`, `SELECT state,current_revision_id,last_saved_by FROM inspection_submissions LIMIT 0`, `SELECT content_json,content_schema_version,saved_actor_name FROM submission_revisions LIMIT 0`, `SELECT operation_label,created_by FROM operation_groups LIMIT 0`, `SELECT transaction_id,actor_name FROM business_events LIMIT 0`, `SELECT kind,direction,quantity,reason FROM quantity_changes LIMIT 0`, `SELECT operation_group_id,batch_key,submission_id FROM submission_slots LIMIT 0`, `SELECT fingerprint,response_status,response_body,expires_at FROM v2_idempotency_requests LIMIT 0`, `SELECT parser_version,dictionary_version,needs_review FROM sample_parse_cache LIMIT 0`, `SELECT code,name FROM units LIMIT 0`, `SELECT category,code,meta FROM dict_items LIMIT 0`, `SELECT schema_version,layout FROM form_templates LIMIT 0`} {
 		rows, e := db.QueryxContext(ctx, q)
 		if e != nil {
 			return fmt.Errorf("incompatible foundation shape")

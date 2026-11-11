@@ -121,6 +121,9 @@ func (s *Service) Login(ctx context.Context, username, plainPassword, ip, userAg
 	if e = w.Commit(); e != nil {
 		return nil, e
 	}
+	if e = s.users.LoadOperationIDs(ctx, &u); e != nil {
+		return nil, e
+	}
 	return &LoginResult{token, expires, &u}, nil
 }
 

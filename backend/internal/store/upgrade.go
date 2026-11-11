@@ -6,7 +6,7 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// Upgrade is an explicit, fingerprint-bound, non-destructive upgrade from schema 7 or 8.
+// Upgrade is an explicit, fingerprint-bound, non-destructive upgrade from schema 7, 8, or 9.
 // No API startup path invokes it. All data and existing checksums are retained.
 func Upgrade(ctx context.Context, db *sqlx.DB, driver, expected string) error {
 	inv, e := Inspect(ctx, db, driver)
@@ -19,8 +19,8 @@ func Upgrade(ctx context.Context, db *sqlx.DB, driver, expected string) error {
 	if inv.Version == LatestSchemaVersion {
 		return CheckReady(ctx, db, driver)
 	}
-	if inv.Version != 7 && inv.Version != 8 {
-		return fmt.Errorf("upgrade requires known v7 or v8")
+	if inv.Version != 7 && inv.Version != 8 && inv.Version != 9 {
+		return fmt.Errorf("upgrade requires known v7, v8, or v9")
 	}
 	_, e = migrate(ctx, db, driver, LatestSchemaVersion, true, inv.DataDigest)
 	return e

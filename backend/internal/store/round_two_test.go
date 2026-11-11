@@ -6,6 +6,33 @@ import (
 	"testing"
 )
 
+func TestUpgradeFromNinePreservesAssignedOperation(t *testing.T) {
+	db, driver := FixtureDB(t, false)
+	ctx := context.Background()
+	if _, err := migrate(ctx, db, driver, 9, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO dict_items(id,category,code,label,created_at,updated_at) VALUES('op','inspection_operation','A','A','2026-11-05T00:00:00Z','2026-11-05T00:00:00Z')`,
+		`INSERT INTO users(id,username,password_hash,operation_id,created_at,updated_at) VALUES('u','legacy','original-hash','op','2026-11-05T00:00:00Z','2026-11-05T00:00:00Z')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inv, err := Inspect(ctx, db, driver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = Upgrade(ctx, db, driver, inv.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	var operationID string
+	if err = db.Get(&operationID, `SELECT operation_id FROM user_operations WHERE user_id='u'`); err != nil || operationID != "op" {
+		t.Fatal("assigned operation not migrated", operationID, err)
+	}
+}
+
 func TestUpgradeFromEightLeavesUsersUnassigned(t *testing.T) {
 	db, driver := FixtureDB(t, false)
 	ctx := context.Background()

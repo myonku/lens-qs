@@ -239,8 +239,13 @@ func (r *Repository) group(id string) (Group, error) {
 
 func (r *Repository) checkOperation(operationID string) error {
 	actor := r.w.Actor
-	if actor.Admin || actor.OperationID != nil && *actor.OperationID == operationID {
+	if actor.Admin {
 		return nil
+	}
+	for _, allowed := range actor.OperationIDs {
+		if allowed == operationID {
+			return nil
+		}
 	}
 	return operationForbidden()
 }
@@ -251,7 +256,7 @@ func operationForbidden() error {
 
 func (r *Repository) checkUngrouped(createdBy string) error {
 	actor := r.w.Actor
-	if actor.Admin || actor.OperationID != nil && actor.ID == createdBy {
+	if actor.Admin || len(actor.OperationIDs) > 0 && actor.ID == createdBy {
 		return nil
 	}
 	return operationForbidden()

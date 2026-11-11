@@ -15,12 +15,12 @@ import (
 )
 
 type Actor struct {
-	OperationID *string `db:"operation_id"`
-	ID          string  `db:"id"`
-	Name        string  `db:"display_name"`
-	Kind        string  `db:"account_type"`
-	Status      string  `db:"status"`
-	Admin       bool    `db:"is_admin"`
+	OperationIDs []string `db:"-"`
+	ID           string   `db:"id"`
+	Name         string   `db:"display_name"`
+	Kind         string   `db:"account_type"`
+	Status       string   `db:"status"`
+	Admin        bool     `db:"is_admin"`
 }
 type actorKey struct{}
 
@@ -59,8 +59,11 @@ func BeginWrite(ctx context.Context, db *sqlx.DB, actor string, domain bool, clo
 		actor, _ = ctx.Value(actorKey{}).(string)
 	}
 	if actor != "" {
-		if e = tx.GetContext(ctx, &w.Actor, tx.Rebind(`SELECT u.id,u.display_name,u.account_type,u.status,u.is_admin,d.id AS operation_id FROM users u LEFT JOIN dict_items d ON d.id=u.operation_id AND d.category='inspection_operation' AND d.active=1 WHERE u.id=?`), actor); e != nil {
+		if e = tx.GetContext(ctx, &w.Actor, tx.Rebind(`SELECT id,display_name,account_type,status,is_admin FROM users WHERE id=?`), actor); e != nil {
 			return fail(httpx.Unauthorized(""))
+		}
+		if e = tx.SelectContext(ctx, &w.Actor.OperationIDs, tx.Rebind(`SELECT u.operation_id FROM user_operations u JOIN dict_items d ON d.id=u.operation_id WHERE u.user_id=? AND d.category='inspection_operation' AND d.active=1`), actor); e != nil {
+			return fail(e)
 		}
 		if w.Actor.Status != "active" {
 			return fail(httpx.Unauthorized(""))

@@ -2,6 +2,7 @@ package users
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -28,7 +29,7 @@ func TestBootstrapAdminEmptyAndExisting(t *testing.T) {
 	}
 	after, _ := s.GetByID(ctx, u.ID)
 	n, _ := s.Count(ctx)
-	if n != 1 || *u != *after {
+	if n != 1 || !reflect.DeepEqual(u, after) {
 		t.Fatal("restart changed existing user")
 	}
 }

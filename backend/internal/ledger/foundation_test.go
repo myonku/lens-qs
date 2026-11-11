@@ -34,7 +34,7 @@ func newFixture(t *testing.T) *fixture {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e := db.Exec(`UPDATE users SET operation_id='op'`); e != nil {
+	if _, e := db.Exec(`INSERT INTO user_operations(user_id,operation_id) SELECT id,'op' FROM users`); e != nil {
 		t.Fatal(e)
 	}
 	f.run("NORMAL", func(r *Repository) (Mutation, error) {
